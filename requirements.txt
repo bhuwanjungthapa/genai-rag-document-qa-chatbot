@@ -1,0 +1,24 @@
+# Course Syllabus QA Chatbot - Python dependencies
+# Tested with Python 3.11
+
+# UI
+streamlit>=1.33,<2.0
+
+# PDF extraction
+pypdf>=4.2,<6.0
+
+# Embeddings + similarity search
+sentence-transformers>=2.7,<4.0
+faiss-cpu>=1.7.4,<2.0
+numpy>=1.26,<3.0
+scikit-learn>=1.3,<2.0
+
+# Data handling
+pandas>=2.1,<3.0
+
+# Config / env
+python-dotenv>=1.0,<2.0
+
+# LLM providers (both optional at runtime; install so app can toggle)
+google-generativeai>=0.7,<1.0
+openai>=1.30,<2.0

@@ -1,0 +1,13 @@
+{
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "chunk_size": 800,
+  "chunk_overlap": 150,
+  "min_chunk_size": 250,
+  "num_documents": 1,
+  "num_pages": 7,
+  "num_chunks": 22,
+  "documents": [
+    "CSE_434___CSE_534_Syllabus.pdf"
+  ],
+  "built_at": "2026-04-19T13:30:34Z"
+}
