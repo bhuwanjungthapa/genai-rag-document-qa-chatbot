@@ -275,7 +275,6 @@ def render_chat_tab(pipeline: RAGPipeline) -> None:
                         f"| section: _{r.section_title or '—'}_"
                     )
                     st.text(r.raw_text)
-            st.caption(f"provider: `{turn['provider']}`")
 
     placeholder = (
         "Ask a question about your course documents..."
@@ -286,8 +285,17 @@ def render_chat_tab(pipeline: RAGPipeline) -> None:
     if question:
         q = question.strip()
         if q:
-            with st.spinner("Retrieving relevant chunks and generating answer..."):
-                result = pipeline.answer(q)
+            # Render the user's question immediately so they can see what
+            # they asked while the pipeline is still working, then show a
+            # thinking spinner inside the assistant bubble. After the
+            # pipeline returns we save the turn and rerun so the final
+            # answer (with citations + retrieved chunks) takes the
+            # placeholder's place.
+            with st.chat_message("user"):
+                st.markdown(q)
+            with st.chat_message("assistant"):
+                with st.spinner("Retrieving relevant chunks and generating answer..."):
+                    result = pipeline.answer(q)
             st.session_state.chat_history.append(
                 {
                     "question": result.question,
