@@ -217,3 +217,66 @@ def summarize_evaluation(results: pd.DataFrame) -> dict:
 
 def load_questions_csv(path: str | Path) -> pd.DataFrame:
     return pd.read_csv(path)
+
+
+# ---------------------------------------------------------------------------
+# Retrieval-only pass used by report figures (Hit@k at multiple k, score hist)
+# ---------------------------------------------------------------------------
+
+
+def compute_retrieval_ranks(
+    pipeline,
+    questions_df: pd.DataFrame,
+    max_k: int = 10,
+) -> pd.DataFrame:
+    """Retrieve top `max_k` chunks per question and record the rank at which
+    the gold supporting chunk first appears.
+
+    Unlike `run_evaluation`, this does NOT call the LLM - it's a cheap
+    retrieval-only pass used to compute Hit@k for multiple k values and to
+    plot the top-1 similarity-score distribution.
+
+    Returns a DataFrame with columns: question, gold_doc, gold_page,
+    top_score, gold_rank (1-indexed; NaN if the gold chunk is not in the
+    top `max_k`).
+    """
+    records: list[dict] = []
+    for _, row in questions_df.iterrows():
+        q = str(row["question"]).strip()
+
+        gold_doc: Optional[str] = None
+        if "gold_doc" in questions_df.columns and pd.notna(row.get("gold_doc")):
+            gold_doc = str(row["gold_doc"]).strip()
+
+        gold_page: Optional[int] = None
+        if "gold_page" in questions_df.columns and pd.notna(row.get("gold_page")):
+            try:
+                gold_page = int(row["gold_page"])
+            except (TypeError, ValueError):
+                gold_page = None
+
+        retrieved = pipeline.retriever.retrieve(q, top_k=max_k)
+        top_score = float(retrieved[0].score) if retrieved else 0.0
+
+        gold_rank: Optional[int] = None
+        if gold_doc:
+            for rank, r in enumerate(retrieved, start=1):
+                if r.doc_name.lower() != gold_doc.lower():
+                    continue
+                if gold_page is None:
+                    gold_rank = rank
+                    break
+                if r.page_start <= gold_page <= r.page_end:
+                    gold_rank = rank
+                    break
+
+        records.append(
+            {
+                "question": q,
+                "gold_doc": gold_doc,
+                "gold_page": gold_page,
+                "top_score": top_score,
+                "gold_rank": gold_rank,
+            }
+        )
+    return pd.DataFrame(records)

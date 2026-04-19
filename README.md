@@ -138,6 +138,16 @@ Then:
 4. The answer panel shows the response, citations, and an expandable
    "Retrieved Chunks" section with similarity scores.
 
+### Managing your corpus
+
+- The **Documents / Index** tab lists every PDF currently in `data/`.
+  Click **Remove** next to a file to delete it from disk and **automatically
+  rebuild the index** from the remaining PDFs.
+- The sidebar has a **Clear corpus & index** button that wipes `data/` and the
+  FAISS index in one click.
+- "Build / Rebuild Index" always rebuilds from whatever is in `data/` at that
+  moment — so the index and the files you see always match.
+
 ---
 
 ## 6. How evaluation works
@@ -172,6 +182,55 @@ You can download both the results CSV and the full JSONL Q&A log.
 
 **Important:** we do not fabricate benchmark scores. The numbers you see are
 exactly what your questions, your PDFs, and your manual labels produce.
+
+---
+
+## 6b. Generating report figures
+
+There are two ways to produce the five report figures:
+
+### Option A — inside the app (recommended)
+
+In the **Evaluation** tab, click **Run evaluation**. Below the results table
+the app now renders the five figures inline and shows a download button under
+each one. There is also a **Download all figures (ZIP)** button at the bottom.
+
+- Figures 1, 2, and 4 appear as soon as evaluation finishes.
+- Figures 3 and 5 unlock the moment you start labeling rows
+  (Correct / Partially Correct / Unsupported / Hallucinated) — the charts
+  update live as you edit.
+
+### Option B — command line
+
+For batch reporting or CI, the same figures can be produced with a script:
+
+```bash
+python reports/make_figures.py \
+    --eval-csv eval/sample_eval_questions.csv \
+    --results-csv path/to/evaluation_results.csv \
+    --out reports/figures
+```
+
+Both paths use the same figure builders (`reports/figures.py`), so the UI
+charts and the saved PNGs are identical.
+
+The files produced are:
+
+| File | What it shows |
+| --- | --- |
+| `fig1_chunks_per_doc.png`     | Corpus description: number of chunks per uploaded document. |
+| `fig2_hit_at_k.png`           | Retrieval quality: Hit@k for k = 1, 3, 5, 10. |
+| `fig3_label_distribution.png` | Answer quality: counts of Correct / Partially Correct / Unsupported / Hallucinated (needs a labeled CSV). |
+| `fig4_score_hist.png`         | Top-1 cosine similarity histogram split by Hit@1 (justifies the `MIN_SCORE` guardrail). |
+| `fig5_heatmap.png`            | Hit@k × answer label heatmap (ties retrieval success to answer quality). |
+
+Notes:
+
+- Figures 2 and 4 need a **built FAISS index** in `indexes/` (build it in the Streamlit app once).
+- Figures 3 and 5 need a **labeled** `evaluation_results.csv` — open the Evaluation tab,
+  click **Run evaluation**, label each row, then click **Download results CSV** and
+  pass that path via `--results-csv`.
+- If any input is missing the script prints a friendly warning and skips just that figure.
 
 ---
 
@@ -269,6 +328,10 @@ Streamlit sidebar.
 ├── logs/                        # qa_log.jsonl (all questions + retrieved chunks)
 ├── eval/
 │   └── sample_eval_questions.csv
+├── reports/
+│   ├── figures.py               # pure figure builders (shared by app + script)
+│   ├── make_figures.py          # CLI: save the 5 report figures to disk
+│   └── figures/                 # output PNGs land here (when using the CLI)
 └── src/
     ├── __init__.py
     ├── pdf_loader.py

@@ -8,6 +8,7 @@ Run with:
 from __future__ import annotations
 
 import io
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -17,11 +18,13 @@ from config import (
     AppConfig,
     DATA_DIR,
     EVAL_DIR,
+    METADATA_FILE,
     QA_LOG_FILE,
     STARTER_QUESTIONS,
 )
 from src.evaluation import (
     VALID_LABELS,
+    compute_retrieval_ranks,
     load_questions_csv,
     run_evaluation,
     summarize_evaluation,
@@ -29,6 +32,14 @@ from src.evaluation import (
 from src.llm_client import describe_available
 from src.rag_pipeline import RAGPipeline
 from src.utils import safe_filename
+
+from reports.figures import (
+    fig_chunks_per_doc,
+    fig_heatmap,
+    fig_hit_at_k,
+    fig_label_distribution,
+    fig_score_hist,
+)
 
 
 st.set_page_config(
@@ -70,8 +81,45 @@ def _init_state() -> None:
         st.session_state.chat_history = []   # list[dict]
     if "eval_results" not in st.session_state:
         st.session_state.eval_results = None
+    if "eval_ranks" not in st.session_state:
+        st.session_state.eval_ranks = None
     if "last_manifest" not in st.session_state:
         st.session_state.last_manifest = None
+
+
+# ---------------------------------------------------------------------------
+# Small helpers for corpus management + figure rendering
+# ---------------------------------------------------------------------------
+
+
+def _rebuild_from_data_dir(pipeline: RAGPipeline) -> dict:
+    """Rebuild the index using exactly whatever PDFs currently live in `data/`.
+
+    If `data/` is empty this resets the index so stale chunks don't linger.
+    """
+    pdf_paths = sorted(DATA_DIR.glob("*.pdf"))
+    if not pdf_paths:
+        pipeline.reset_index()
+        return {"num_documents": 0, "num_pages": 0, "num_chunks": 0}
+    return pipeline.build_index(pdf_paths)
+
+
+def _fig_to_png_bytes(fig) -> bytes:
+    """Render a matplotlib Figure to PNG bytes (for download buttons)."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _figures_to_zip_bytes(named_figs: list[tuple[str, object]]) -> bytes:
+    """Bundle several figures into a single ZIP payload."""
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, fig in named_figs:
+            z.writestr(name, _fig_to_png_bytes(fig))
+    zip_buf.seek(0)
+    return zip_buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +180,11 @@ def render_sidebar(base_cfg: AppConfig) -> dict:
         use_container_width=True,
         type="primary",
     )
+    clear_clicked = st.sidebar.button(
+        ":wastebasket: Clear corpus & index",
+        use_container_width=True,
+        help="Delete every uploaded PDF from `data/` and wipe the FAISS index.",
+    )
 
     return {
         "provider": provider,
@@ -142,6 +195,7 @@ def render_sidebar(base_cfg: AppConfig) -> dict:
         "min_score": float(min_score),
         "uploaded": uploaded,
         "build_clicked": build_clicked,
+        "clear_clicked": clear_clicked,
     }
 
 
@@ -239,6 +293,41 @@ def render_chat_tab(pipeline: RAGPipeline) -> None:
 def render_documents_tab(pipeline: RAGPipeline) -> None:
     st.subheader(":page_facing_up: Indexed Documents")
 
+    # --- Corpus on disk (so users can remove individual PDFs) ------------
+    pdfs_on_disk = sorted(DATA_DIR.glob("*.pdf"))
+    with st.container(border=True):
+        st.markdown("**Uploaded PDFs on disk** (`data/`)")
+        if not pdfs_on_disk:
+            st.caption("No PDFs uploaded yet. Use the sidebar to upload.")
+        else:
+            st.caption(
+                "Removing a file deletes it from `data/` and automatically "
+                "rebuilds the index from whatever is left."
+            )
+            for p in pdfs_on_disk:
+                c1, c2, c3 = st.columns([4, 2, 1])
+                c1.write(f"`{p.name}`")
+                size_kb = max(1, p.stat().st_size // 1024)
+                c2.caption(f"{size_kb} KB")
+                if c3.button("Remove", key=f"rm_{p.name}"):
+                    try:
+                        p.unlink()
+                    except OSError as e:
+                        st.error(f"Could not delete {p.name}: {e}")
+                    else:
+                        with st.spinner(f"Rebuilding index without {p.name}..."):
+                            manifest = _rebuild_from_data_dir(pipeline)
+                        st.session_state.last_manifest = manifest
+                        st.session_state.eval_results = None
+                        st.session_state.eval_ranks = None
+                        st.success(
+                            f"Removed `{p.name}`. "
+                            f"Index now has {manifest.get('num_chunks', 0)} chunks "
+                            f"from {manifest.get('num_documents', 0)} document(s)."
+                        )
+                        st.rerun()
+
+    # --- Index contents --------------------------------------------------
     if not pipeline.is_ready():
         st.info("Index is empty. Upload PDFs and build the index first.")
         return
@@ -312,9 +401,12 @@ def render_evaluation_tab(pipeline: RAGPipeline) -> None:
         else:
             with st.spinner("Running questions through the pipeline..."):
                 results = run_evaluation(pipeline, df, top_k=pipeline.config.top_k)
+                ranks = compute_retrieval_ranks(pipeline, df, max_k=10)
             st.session_state.eval_results = results
+            st.session_state.eval_ranks = ranks
 
     results = st.session_state.eval_results
+    ranks = st.session_state.eval_ranks
     if results is None or results.empty:
         return
 
@@ -369,21 +461,134 @@ def render_evaluation_tab(pipeline: RAGPipeline) -> None:
         f"({summary.get('n_labeled', 0)} rows manually labeled)"
     )
 
-    # Download buttons
+    # --- CSV / log downloads ---------------------------------------------
     csv_bytes = edited.to_csv(index=False).encode("utf-8")
-    st.download_button(
+    d1, d2 = st.columns(2)
+    d1.download_button(
         ":arrow_down: Download results CSV",
         data=csv_bytes,
         file_name="evaluation_results.csv",
         mime="text/csv",
+        use_container_width=True,
     )
-
     if QA_LOG_FILE.exists():
-        st.download_button(
+        d2.download_button(
             ":arrow_down: Download QA log (JSONL)",
             data=QA_LOG_FILE.read_bytes(),
             file_name=QA_LOG_FILE.name,
             mime="application/jsonl",
+            use_container_width=True,
+        )
+
+    # --- Report figures --------------------------------------------------
+    st.markdown("---")
+    st.markdown("### :bar_chart: Report figures")
+    st.caption(
+        "Generated from the current evaluation run and your labels. "
+        "Figures 3 and 5 appear once you label at least one row above."
+    )
+
+    chunks_df = pd.read_parquet(METADATA_FILE) if METADATA_FILE.exists() else pd.DataFrame()
+    ranks_df = ranks if isinstance(ranks, pd.DataFrame) else pd.DataFrame()
+
+    named_figs: list[tuple[str, object]] = []
+
+    # Figure 1 - chunks per document
+    with st.container(border=True):
+        st.markdown("**Figure 1 — Chunks per document**")
+        if chunks_df.empty:
+            st.info("No index loaded; upload PDFs and build the index first.")
+        else:
+            f1 = fig_chunks_per_doc(chunks_df)
+            st.pyplot(f1, use_container_width=True)
+            st.download_button(
+                "Download fig1_chunks_per_doc.png",
+                data=_fig_to_png_bytes(f1),
+                file_name="fig1_chunks_per_doc.png",
+                mime="image/png",
+                key="dl_fig1",
+            )
+            named_figs.append(("fig1_chunks_per_doc.png", f1))
+
+    # Figure 2 - Hit@k
+    with st.container(border=True):
+        st.markdown("**Figure 2 — Retrieval Hit@k (k = 1, 3, 5, 10)**")
+        if ranks_df.empty:
+            st.info("Run evaluation to compute retrieval ranks.")
+        elif ranks_df["gold_doc"].notna().sum() == 0:
+            st.info("Add `gold_doc` (and optionally `gold_page`) in the eval CSV for Hit@k.")
+        else:
+            f2 = fig_hit_at_k(ranks_df)
+            st.pyplot(f2, use_container_width=True)
+            st.download_button(
+                "Download fig2_hit_at_k.png",
+                data=_fig_to_png_bytes(f2),
+                file_name="fig2_hit_at_k.png",
+                mime="image/png",
+                key="dl_fig2",
+            )
+            named_figs.append(("fig2_hit_at_k.png", f2))
+
+    # Figure 3 - Label distribution
+    with st.container(border=True):
+        st.markdown("**Figure 3 — Answer label distribution**")
+        f3 = fig_label_distribution(edited)
+        if f3 is None:
+            st.info("Label at least one row above (Correct / Partially Correct / Unsupported / Hallucinated) to unlock this chart.")
+        else:
+            st.pyplot(f3, use_container_width=True)
+            st.download_button(
+                "Download fig3_label_distribution.png",
+                data=_fig_to_png_bytes(f3),
+                file_name="fig3_label_distribution.png",
+                mime="image/png",
+                key="dl_fig3",
+            )
+            named_figs.append(("fig3_label_distribution.png", f3))
+
+    # Figure 4 - Top-1 score histogram
+    with st.container(border=True):
+        st.markdown("**Figure 4 — Top-1 retrieval score by Hit@1**")
+        if ranks_df.empty or ranks_df["gold_doc"].notna().sum() == 0:
+            st.info("Requires a `gold_doc` column and a completed evaluation run.")
+        else:
+            f4 = fig_score_hist(ranks_df)
+            st.pyplot(f4, use_container_width=True)
+            st.download_button(
+                "Download fig4_score_hist.png",
+                data=_fig_to_png_bytes(f4),
+                file_name="fig4_score_hist.png",
+                mime="image/png",
+                key="dl_fig4",
+            )
+            named_figs.append(("fig4_score_hist.png", f4))
+
+    # Figure 5 - Hit@k x label heatmap
+    with st.container(border=True):
+        st.markdown("**Figure 5 — Retrieval success × answer label heatmap**")
+        f5 = fig_heatmap(edited, ranks_df, k=5)
+        if f5 is None:
+            st.info("Needs both (a) labeled rows and (b) `gold_doc` in the eval CSV.")
+        else:
+            st.pyplot(f5, use_container_width=True)
+            st.download_button(
+                "Download fig5_heatmap.png",
+                data=_fig_to_png_bytes(f5),
+                file_name="fig5_heatmap.png",
+                mime="image/png",
+                key="dl_fig5",
+            )
+            named_figs.append(("fig5_heatmap.png", f5))
+
+    # Bundle download
+    if named_figs:
+        st.download_button(
+            ":package: Download all figures (ZIP)",
+            data=_figures_to_zip_bytes(named_figs),
+            file_name="report_figures.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="dl_figs_zip",
         )
 
 
@@ -416,13 +621,30 @@ def main() -> None:
 
     provider_used = pipeline.set_llm_from_config(sidebar["provider"])
 
-    # Handle build/rebuild click.
+    # Handle "Clear corpus & index" click.
+    if sidebar["clear_clicked"]:
+        removed = 0
+        for p in DATA_DIR.glob("*.pdf"):
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass
+        pipeline.reset_index()
+        st.session_state.last_manifest = None
+        st.session_state.eval_results = None
+        st.session_state.eval_ranks = None
+        st.sidebar.success(f"Cleared {removed} PDF(s) and reset the index.")
+
+    # Handle build/rebuild click. Always rebuild from the full `data/` folder
+    # (after saving any new uploads) so the index matches what is actually on
+    # disk - removing a PDF truly removes it from retrieval.
     if sidebar["build_clicked"]:
-        saved = _persist_uploads(sidebar["uploaded"])
-        existing_pdfs = sorted(DATA_DIR.glob("*.pdf"))
-        pdf_paths = saved or existing_pdfs
+        _persist_uploads(sidebar["uploaded"])
+        pdf_paths = sorted(DATA_DIR.glob("*.pdf"))
         if not pdf_paths:
             st.sidebar.error("No PDFs found. Upload at least one PDF first.")
+            pipeline.reset_index()
         else:
             with st.spinner(f"Building index from {len(pdf_paths)} PDF(s)..."):
                 manifest = pipeline.build_index(pdf_paths)
@@ -435,6 +657,8 @@ def main() -> None:
                     f"{manifest['num_pages']} page(s), "
                     f"{manifest['num_chunks']} chunk(s)."
                 )
+                st.session_state.eval_results = None
+                st.session_state.eval_ranks = None
 
     # Sidebar status
     st.sidebar.markdown("---")

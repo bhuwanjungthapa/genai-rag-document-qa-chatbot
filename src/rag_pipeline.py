@@ -98,9 +98,16 @@ class RAGPipeline:
     # -------- Index lifecycle --------------------------------------------
 
     def build_index(self, pdf_paths: Iterable[str | Path]) -> dict:
-        """Ingest PDFs, chunk them, embed them, and (re)build the index."""
-        pages: list[PageRecord] = load_pdfs(pdf_paths)
+        """Ingest PDFs, chunk them, embed them, and (re)build the index.
+
+        If `pdf_paths` is empty or no text can be extracted, the in-memory
+        store AND the on-disk index are both reset, so the app never shows
+        stale chunks from a previous build.
+        """
+        pdf_paths = list(pdf_paths)
+        pages: list[PageRecord] = load_pdfs(pdf_paths) if pdf_paths else []
         if not pages:
+            self.reset_index()
             return {"num_documents": 0, "num_pages": 0, "num_chunks": 0}
 
         chunks = chunk_pages(
@@ -110,6 +117,7 @@ class RAGPipeline:
             min_chunk_size=self.config.min_chunk_size,
         )
         if not chunks:
+            self.reset_index()
             return {
                 "num_documents": len({p.doc_name for p in pages}),
                 "num_pages": len(pages),
@@ -141,6 +149,17 @@ class RAGPipeline:
             manifest=manifest,
         )
         return manifest
+
+    def reset_index(self) -> None:
+        """Drop the in-memory store and delete persisted index files on disk."""
+        self.store = FaissVectorStore(dim=self.embedder.dim)
+        self.retriever = Retriever(self.embedder, self.store)
+        for p in (FAISS_INDEX_FILE, METADATA_FILE, MANIFEST_FILE):
+            try:
+                if p.exists():
+                    p.unlink()
+            except OSError:
+                pass
 
     def load_index_if_exists(self) -> Optional[dict]:
         if not FaissVectorStore.exists(FAISS_INDEX_FILE, METADATA_FILE):
