@@ -2,7 +2,7 @@
 # Tested with Python 3.11
 
 # UI
-streamlit>=1.33,<2.0
+streamlit>=1.37,<2.0
 
 # PDF extraction
 pypdf>=4.2,<6.0

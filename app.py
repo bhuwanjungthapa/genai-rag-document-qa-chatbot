@@ -104,6 +104,19 @@ def _rebuild_from_data_dir(pipeline: RAGPipeline) -> dict:
     return pipeline.build_index(pdf_paths)
 
 
+def _reset_eval_editor_state() -> None:
+    """Clear the results data_editor widget state.
+
+    Call this whenever the underlying `eval_results` DataFrame is being
+    replaced (new evaluation run, corpus change, etc.). Without this, the
+    editor's diff (stored under key `eval_editor`) tries to apply old edits
+    to the new rows and can silently reset or swap values.
+    """
+    for k in ("eval_editor",):
+        if k in st.session_state:
+            del st.session_state[k]
+
+
 def _fig_to_png_bytes(fig) -> bytes:
     """Render a matplotlib Figure to PNG bytes (for download buttons)."""
     buf = io.BytesIO()
@@ -323,6 +336,7 @@ def render_documents_tab(pipeline: RAGPipeline) -> None:
                         st.session_state.last_manifest = manifest
                         st.session_state.eval_results = None
                         st.session_state.eval_ranks = None
+                        _reset_eval_editor_state()
                         st.success(
                             f"Removed `{p.name}`. "
                             f"Index now has {manifest.get('num_chunks', 0)} chunks "
@@ -454,7 +468,31 @@ def render_evaluation_tab(pipeline: RAGPipeline) -> None:
                 ranks = compute_retrieval_ranks(pipeline, df, max_k=10)
             st.session_state.eval_results = results
             st.session_state.eval_ranks = ranks
+            # New rows - clear the editor's diff so old label edits don't try
+            # to apply to different questions.
+            _reset_eval_editor_state()
 
+    if st.session_state.eval_results is None or st.session_state.eval_results.empty:
+        return
+
+    # Everything below is wrapped in a Streamlit fragment so that editing a
+    # cell in the results data-editor (typically the `label` column) only
+    # re-runs THIS block. The rest of the page - sidebar, diagnostics,
+    # questions preview, etc. - is not re-executed, so the scroll position
+    # no longer jumps to the bottom on every label change, and the figures
+    # simply update in place.
+    _render_results_fragment()
+
+
+@st.fragment
+def _render_results_fragment() -> None:
+    """Results table + metrics + downloads + report figures.
+
+    Runs as a Streamlit fragment so in-table edits do NOT reflow the whole
+    page. Reads the latest results/ranks from session_state on each partial
+    rerun so figure 3 (label distribution) and figure 5 (Hit@k x label)
+    stay in sync with the editor above them.
+    """
     results = st.session_state.eval_results
     ranks = st.session_state.eval_ranks
     if results is None or results.empty:
@@ -462,16 +500,52 @@ def render_evaluation_tab(pipeline: RAGPipeline) -> None:
 
     st.markdown("#### Results — edit the `label` and `notes` columns as you review")
 
+    # Column order: put the two columns the grader actually edits
+    # (`label`, `notes`) immediately after `predicted_answer`, so they are
+    # visible without horizontal scrolling. Other columns follow in a useful
+    # reading order.
+    preferred_order = [
+        "question",
+        "gold_answer",
+        "predicted_answer",
+        "label",
+        "notes",
+        "hit_at_k",
+        "grounded_or_not",
+        "retrieved_doc_names",
+        "retrieved_pages",
+        "top_score",
+        "overlap_pred_vs_gold",
+        "overlap_pred_vs_context",
+    ]
+    column_order = [c for c in preferred_order if c in results.columns]
+    # Include any extra columns at the end so nothing is silently hidden.
+    column_order += [c for c in results.columns if c not in column_order]
+
     label_options = VALID_LABELS
+
+    st.caption(
+        "Tip: edit labels in the normal (non-fullscreen) view. "
+        "Streamlit's fullscreen overlay for tables resets on every keystroke; "
+        "in the normal view your edits persist and the charts below update in place."
+    )
+
+    # IMPORTANT: pass the baseline `results` to the editor and do NOT write
+    # the returned `edited` back into st.session_state.eval_results.
+    # `st.data_editor` stores edits as a diff against its `data` arg (keyed by
+    # "eval_editor"); if we mutate the baseline each rerun, the diff and the
+    # new data go out of sync and Streamlit resets the widget - which both
+    # loses your just-picked label and closes the fullscreen overlay.
     edited = st.data_editor(
         results,
         use_container_width=True,
         num_rows="fixed",
+        column_order=column_order,
         column_config={
             "label": st.column_config.SelectboxColumn(
-                "label", options=label_options, required=False
+                "label", options=label_options, required=False, width="small"
             ),
-            "notes": st.column_config.TextColumn("notes"),
+            "notes": st.column_config.TextColumn("notes", width="medium"),
             "predicted_answer": st.column_config.TextColumn("predicted_answer", width="large"),
             "gold_answer": st.column_config.TextColumn("gold_answer", width="medium"),
             "hit_at_k": st.column_config.CheckboxColumn("hit_at_k"),
@@ -479,7 +553,6 @@ def render_evaluation_tab(pipeline: RAGPipeline) -> None:
         },
         key="eval_editor",
     )
-    st.session_state.eval_results = edited
 
     # Summary metrics
     summary = summarize_evaluation(edited)
@@ -535,7 +608,8 @@ def render_evaluation_tab(pipeline: RAGPipeline) -> None:
     st.markdown("### :bar_chart: Report figures")
     st.caption(
         "Generated from the current evaluation run and your labels. "
-        "Figures 3 and 5 appear once you label at least one row above."
+        "Figures 3 and 5 appear once you label at least one row above. "
+        "Editing the table above updates these charts in place."
     )
 
     chunks_df = pd.read_parquet(METADATA_FILE) if METADATA_FILE.exists() else pd.DataFrame()
@@ -684,6 +758,7 @@ def main() -> None:
         st.session_state.last_manifest = None
         st.session_state.eval_results = None
         st.session_state.eval_ranks = None
+        _reset_eval_editor_state()
         st.sidebar.success(f"Cleared {removed} PDF(s) and reset the index.")
 
     # Handle build/rebuild click. Always rebuild from the full `data/` folder
@@ -709,6 +784,7 @@ def main() -> None:
                 )
                 st.session_state.eval_results = None
                 st.session_state.eval_ranks = None
+                _reset_eval_editor_state()
 
     # Sidebar status
     st.sidebar.markdown("---")
