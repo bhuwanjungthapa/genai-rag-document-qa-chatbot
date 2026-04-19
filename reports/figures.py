@@ -92,17 +92,35 @@ def fig_hit_at_k(
 
     fig, ax = plt.subplots(figsize=(6, 4))
     bars = ax.bar([str(k) for k in ks], rates, color="#55A868")
-    ax.set_ylim(0, 1.05)
+    ax.set_ylim(0, 1.08)
     ax.set_xlabel("k")
     ax.set_ylabel("Hit@k")
     ax.set_title(f"Retrieval Hit@k  (n={n})")
     for bar, r in zip(bars, rates):
+        hits = int(round(r * n))
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             bar.get_height() + 0.02,
-            f"{r:.0%}",
+            f"{hits}/{n}\n{r:.0%}",
             ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+
+    # Helpful hint when every bar is empty.
+    if n > 0 and all(r == 0.0 for r in rates):
+        ax.text(
+            0.5,
+            0.5,
+            "No retrieved docs matched any gold_doc.\n"
+            "Check the Retrieval diagnostics panel\n"
+            "or edit the gold_doc / gold_page values.",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
             fontsize=10,
+            color="#555",
+            bbox=dict(boxstyle="round,pad=0.5", fc="#FFF3CD", ec="#F0AD4E"),
         )
 
     fig.tight_layout()

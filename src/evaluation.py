@@ -15,6 +15,7 @@ Output columns produced by `run_evaluation`:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,46 @@ import pandas as pd
 
 from .rag_pipeline import RAGAnswer, RAGPipeline
 from .retriever import RetrievedChunk
+
+
+# ---------------------------------------------------------------------------
+# Forgiving document-name matching
+# ---------------------------------------------------------------------------
+#
+# Eval CSVs usually say something short like `Syllabus.pdf`, but the actual
+# uploaded file might be named `CSE_434___CSE_534_Syllabus.pdf`. A strict
+# equality check would mark every row a miss even though retrieval is working
+# correctly. We normalize both sides and accept a substring match in either
+# direction (with a 4-char minimum to avoid silly "a" matches).
+#
+
+_NONALNUM = re.compile(r"[^a-z0-9]+")
+
+
+def _normalize_doc_name(name: str | None) -> str:
+    if not name:
+        return ""
+    n = str(name).lower().strip()
+    if n.endswith(".pdf"):
+        n = n[:-4]
+    return _NONALNUM.sub("_", n).strip("_")
+
+
+def docs_match(indexed_name: str, gold_name: str | None) -> bool:
+    """Return True if an indexed document plausibly corresponds to a CSV
+    `gold_doc` value. Normalized exact match OR substring match (min 4 chars)
+    in either direction."""
+    a = _normalize_doc_name(indexed_name)
+    b = _normalize_doc_name(gold_name)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if len(b) >= 4 and b in a:
+        return True
+    if len(a) >= 4 and a in b:
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -42,9 +83,8 @@ def hit_at_k(
     """
     if not gold_doc:
         return None
-    gold_doc_norm = gold_doc.strip().lower()
     for r in retrieved:
-        if r.doc_name.lower() != gold_doc_norm:
+        if not docs_match(r.doc_name, gold_doc):
             continue
         if gold_page is None:
             return True
@@ -261,7 +301,7 @@ def compute_retrieval_ranks(
         gold_rank: Optional[int] = None
         if gold_doc:
             for rank, r in enumerate(retrieved, start=1):
-                if r.doc_name.lower() != gold_doc.lower():
+                if not docs_match(r.doc_name, gold_doc):
                     continue
                 if gold_page is None:
                     gold_rank = rank

@@ -20,11 +20,11 @@ from config import (
     EVAL_DIR,
     METADATA_FILE,
     QA_LOG_FILE,
-    STARTER_QUESTIONS,
 )
 from src.evaluation import (
     VALID_LABELS,
     compute_retrieval_ranks,
+    docs_match,
     load_questions_csv,
     run_evaluation,
     summarize_evaluation,
@@ -218,57 +218,36 @@ def _persist_uploads(uploaded_files) -> list[Path]:
 def render_chat_tab(pipeline: RAGPipeline) -> None:
     st.subheader(":speech_balloon: Ask a question about your course documents")
 
-    if not pipeline.is_ready():
+    ready = pipeline.is_ready()
+    if not ready:
         st.info(
             "No index loaded yet. Upload PDFs in the sidebar and click "
             "**Build / Rebuild Index** to start."
         )
 
-    # Starter questions
-    st.markdown("**Starter questions:**")
-    cols = st.columns(len(STARTER_QUESTIONS))
-    starter_click = None
-    for col, q in zip(cols, STARTER_QUESTIONS):
-        if col.button(q, use_container_width=True):
-            starter_click = q
+    # Top-of-tab controls: clear history.
+    if st.session_state.chat_history:
+        if st.button("Clear chat history", key="clear_chat"):
+            st.session_state.chat_history = []
+            st.rerun()
 
-    question = st.text_input(
-        "Your question",
-        value=starter_click or "",
-        placeholder="e.g. What is the late assignment policy?",
-    )
-    ask = st.button("Ask", type="primary")
-
-    if ask and question.strip():
-        if not pipeline.is_ready():
-            st.error("Please build the index first (sidebar).")
-        else:
-            with st.spinner("Retrieving relevant chunks and generating answer..."):
-                result = pipeline.answer(question)
-            st.session_state.chat_history.append(
-                {
-                    "question": result.question,
-                    "answer": result.answer,
-                    "citations": result.citations,
-                    "retrieved": result.retrieved,
-                    "grounded": result.grounded,
-                    "provider": result.provider,
-                }
-            )
-
-    # Render chat history (newest first)
-    for turn in reversed(st.session_state.chat_history):
-        with st.container(border=True):
-            st.markdown(f"**You:** {turn['question']}")
-            st.markdown(f"**Assistant** _(provider: `{turn['provider']}`)_")
-            st.write(turn["answer"])
-
+    # Render the conversation using native chat widgets so Enter-to-send
+    # works and the layout matches other Streamlit chat apps.
+    for turn in st.session_state.chat_history:
+        with st.chat_message("user"):
+            st.markdown(turn["question"])
+        with st.chat_message("assistant"):
+            st.markdown(turn["answer"])
             if turn["citations"]:
-                st.markdown("**Citations:** " + " ".join(f"`{c}`" for c in turn["citations"]))
+                st.markdown(
+                    "**Citations:** "
+                    + " ".join(f"`{c}`" for c in turn["citations"])
+                )
             elif not turn["grounded"]:
-                st.warning("No citations - the assistant did not find strong supporting evidence.")
-
-            with st.expander("Retrieved Chunks", expanded=False):
+                st.caption(
+                    "No citations — the assistant did not find strong supporting evidence."
+                )
+            with st.expander("Retrieved chunks", expanded=False):
                 if not turn["retrieved"]:
                     st.caption("No chunks were retrieved.")
                 for i, r in enumerate(turn["retrieved"], start=1):
@@ -283,6 +262,30 @@ def render_chat_tab(pipeline: RAGPipeline) -> None:
                         f"| section: _{r.section_title or '—'}_"
                     )
                     st.text(r.raw_text)
+            st.caption(f"provider: `{turn['provider']}`")
+
+    placeholder = (
+        "Ask a question about your course documents..."
+        if ready
+        else "Build the index first to enable chat"
+    )
+    question = st.chat_input(placeholder, disabled=not ready)
+    if question:
+        q = question.strip()
+        if q:
+            with st.spinner("Retrieving relevant chunks and generating answer..."):
+                result = pipeline.answer(q)
+            st.session_state.chat_history.append(
+                {
+                    "question": result.question,
+                    "answer": result.answer,
+                    "citations": result.citations,
+                    "retrieved": result.retrieved,
+                    "grounded": result.grounded,
+                    "provider": result.provider,
+                }
+            )
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +397,53 @@ def render_evaluation_tab(pipeline: RAGPipeline) -> None:
 
     st.markdown("**Questions preview:**")
     st.dataframe(df, use_container_width=True)
+
+    # --- Retrieval diagnostics: catch gold_doc/filename mismatches ------
+    if pipeline.is_ready() and "gold_doc" in df.columns:
+        indexed_docs: list[str] = sorted(
+            pipeline.store.metadata["doc_name"].dropna().unique().tolist()
+        )
+        csv_docs = sorted(
+            {
+                str(x).strip()
+                for x in df["gold_doc"].dropna().tolist()
+                if str(x).strip()
+            }
+        )
+        unmatched = [g for g in csv_docs if not any(docs_match(d, g) for d in indexed_docs)]
+
+        header = (
+            f"⚠  Retrieval diagnostics — {len(unmatched)} unmatched gold_doc value(s)"
+            if unmatched
+            else ":mag:  Retrieval diagnostics — all gold_doc values match"
+        )
+        with st.expander(header, expanded=bool(unmatched)):
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Indexed documents (in `data/`)**")
+                if not indexed_docs:
+                    st.caption("(none)")
+                for d in indexed_docs:
+                    st.markdown(f"- `{d}`")
+            with c2:
+                st.markdown("**`gold_doc` values in CSV**")
+                if not csv_docs:
+                    st.caption("(none — Hit@k will be skipped)")
+                for g in csv_docs:
+                    ok = any(docs_match(d, g) for d in indexed_docs)
+                    icon = "✅" if ok else "❌"
+                    st.markdown(f"- {icon} `{g}`")
+
+            if unmatched:
+                st.warning(
+                    "These `gold_doc` values in your CSV do not match any indexed "
+                    "document name, so Hit@k will be 0 for those rows even if "
+                    "retrieval is actually finding the right content.\n\n"
+                    "Fix by either (a) renaming PDFs in `data/` and rebuilding, "
+                    "or (b) editing the `gold_doc` column of your CSV to match an "
+                    "indexed filename (substrings of the filename are OK — e.g. "
+                    "`Syllabus.pdf` will match `CSE_434___CSE_534_Syllabus.pdf`)."
+                )
 
     if st.button(":arrow_forward: Run evaluation", type="primary"):
         if not pipeline.is_ready():
