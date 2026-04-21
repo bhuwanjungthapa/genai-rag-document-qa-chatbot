@@ -81,6 +81,7 @@ Before anything is indexed, the sidebar lets you set:
 | ----------------- | --------------------------------------------------------------- |
 | **Upload PDFs**   | Which documents will become the chatbot's knowledge base.       |
 | **LLM provider**  | Which model writes the final answer (Gemini or OpenAI).         |
+| **Embedding model** | Which sentence-transformer turns chunks and questions into vectors. Choices range from tiny (`snowflake-arctic-embed-xs`, ~22 MB) to the default `all-MiniLM-L6-v2` (~90 MB) up to `all-mpnet-base-v2` (~420 MB). |
 | **chunk_size**    | Maximum characters per chunk. Bigger = more context per chunk.  |
 | **chunk_overlap** | Characters shared with the neighboring chunk. Prevents cut-offs.|
 | **min_chunk_size**| Chunks smaller than this are merged into a neighbor.            |
@@ -119,10 +120,15 @@ Under the hood the app does five things in order:
    - `page_start` and `page_end`,
    - `section_title` (if one was detected),
    - `raw_text`.
-4. **Embed the chunks.** A small local sentence-embedding model
-   (`all-MiniLM-L6-v2`) converts every chunk's text into a vector of
-   numbers (a "fingerprint"). Similar passages end up as vectors pointing
-   in similar directions.
+4. **Embed the chunks.** The sentence-transformer chosen in the sidebar
+   **Embedding model** dropdown (default `all-MiniLM-L6-v2`) converts every
+   chunk's text into a vector of numbers (a "fingerprint"). Similar
+   passages end up as vectors pointing in similar directions. The first
+   time a given model is used, its weights are downloaded from Hugging
+   Face and cached in `~/.cache/huggingface/`; later runs load instantly
+   and work offline. The selected model id is written into
+   `indexes/manifest.json` so the app can later detect if you switch
+   models and warn you that the old index is no longer compatible.
 5. **Index and persist.** All the vectors go into a FAISS index for fast
    similarity search, and three files are written to disk:
    - `indexes/faiss.index` — the numeric index,
@@ -229,7 +235,10 @@ reconstruct why the bot said something.
 ## 5. The "Documents / Index" tab
 
 This tab is your window into **what the chatbot actually knows right
-now**. It has three sections:
+now**. It has three sections, and at the top it shows the **embedding
+model used for this index** (read from `indexes/manifest.json`), so you
+can always tell which model produced the vectors behind the current
+answers.
 
 ### Files on disk (`data/`)
 
@@ -447,6 +456,14 @@ lifting:
 - **One embedding model on both sides.** Because the same model is used
   to embed chunks and to embed questions, their vectors live in the same
   space, so cosine similarity is meaningful.
+- **Embedding-model mismatch guard.** When the app starts, it compares
+  the sidebar's selected embedding model to the one recorded in
+  `indexes/manifest.json`. If you have switched models since the index
+  was built, the stale index is discarded automatically and a warning
+  tells you to rebuild. This prevents the silent failure mode where
+  questions are embedded with model A but chunks were embedded with
+  model B — the scores would look normal but the retrieved passages
+  would be effectively random.
 - **L2-normalized vectors + inner-product FAISS.** Inner product on
   normalized vectors equals cosine similarity, which gives us scores
   bounded roughly in `[-1, 1]` and a clean threshold to talk about.

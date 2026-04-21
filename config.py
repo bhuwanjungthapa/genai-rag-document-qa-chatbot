@@ -90,6 +90,44 @@ class AppConfig:
         return available
 
 
+# --- Embedding model catalog ---
+#
+# Each entry is (model_id, short_label, description). The model_id must be a
+# valid Hugging Face / sentence-transformers repo id. The first model that
+# matches `EMBEDDING_MODEL` from the environment is used as the default; if
+# none match, the env value itself is still selectable (falls back to a "custom"
+# row at the top of the sidebar selectbox).
+#
+# Notes:
+# - Changing the embedding model invalidates any existing FAISS index because
+#   the vector space and often the dimensionality are different. The UI will
+#   warn and reset the index when it detects such a mismatch.
+# - The first call for a new model downloads its weights from the Hugging Face
+#   hub; subsequent runs reuse the local cache.
+EMBEDDING_MODEL_OPTIONS: list[tuple[str, str, str]] = [
+    (
+        "sentence-transformers/all-MiniLM-L6-v2",
+        "MiniLM-L6-v2 (default, 384d, ~90 MB)",
+        "Balanced small English model. Solid general-purpose baseline.",
+    ),
+    (
+        "Snowflake/snowflake-arctic-embed-xs",
+        "Arctic-embed-xs (384d, ~22 MB)",
+        "Very small and fast. Good when memory / cold-start matters.",
+    ),
+    (
+        "BAAI/bge-small-en-v1.5",
+        "BGE-small-en-v1.5 (384d, ~130 MB)",
+        "Strong small retriever, often outperforms MiniLM on QA tasks.",
+    ),
+    (
+        "sentence-transformers/all-mpnet-base-v2",
+        "MPNet-base-v2 (768d, ~420 MB)",
+        "Larger and more accurate, but slower and heavier to download.",
+    ),
+]
+
+
 # The strict, grounded answer prompt used by the generation step.
 ANSWER_SYSTEM_PROMPT = (
     "You are a document Q&A assistant. Answer the user's question using ONLY "

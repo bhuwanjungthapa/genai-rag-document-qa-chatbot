@@ -17,7 +17,9 @@ import streamlit as st
 from config import (
     AppConfig,
     DATA_DIR,
+    EMBEDDING_MODEL_OPTIONS,
     EVAL_DIR,
+    MANIFEST_FILE,
     METADATA_FILE,
     QA_LOG_FILE,
 )
@@ -162,6 +164,36 @@ def render_sidebar(base_cfg: AppConfig) -> dict:
         help="Pick which LLM answers questions. Requires the matching API key in `.env`.",
     )
 
+    st.sidebar.subheader("Embedding model")
+    # Build the list of selectable models. If the value from `.env` isn't in
+    # the catalog, surface it as a first "custom" row so the user's config
+    # is never silently overridden.
+    catalog_ids = [mid for mid, _, _ in EMBEDDING_MODEL_OPTIONS]
+    labels_by_id = {mid: lbl for mid, lbl, _ in EMBEDDING_MODEL_OPTIONS}
+    descs_by_id = {mid: desc for mid, _, desc in EMBEDDING_MODEL_OPTIONS}
+    options: list[str] = list(catalog_ids)
+    if base_cfg.embedding_model and base_cfg.embedding_model not in options:
+        options.insert(0, base_cfg.embedding_model)
+        labels_by_id[base_cfg.embedding_model] = f"{base_cfg.embedding_model} (from .env)"
+        descs_by_id[base_cfg.embedding_model] = "Custom model id loaded from your .env file."
+
+    default_idx = (
+        options.index(base_cfg.embedding_model)
+        if base_cfg.embedding_model in options
+        else 0
+    )
+    embedding_model = st.sidebar.selectbox(
+        "Embedding model",
+        options=options,
+        index=default_idx,
+        format_func=lambda mid: labels_by_id.get(mid, mid),
+        help=(
+            "The model used to embed both chunks and questions. Changing it "
+            "invalidates any existing index — you'll be prompted to rebuild."
+        ),
+    )
+    st.sidebar.caption(descs_by_id.get(embedding_model, ""))
+
     st.sidebar.subheader("Chunking")
     chunk_size = st.sidebar.number_input(
         "Chunk size (chars)", min_value=200, max_value=4000, value=base_cfg.chunk_size, step=50
@@ -184,7 +216,7 @@ def render_sidebar(base_cfg: AppConfig) -> dict:
 
     st.sidebar.subheader("Documents")
     uploaded = st.sidebar.file_uploader(
-        "Upload course PDFs",
+        "Upload PDFs",
         type=["pdf"],
         accept_multiple_files=True,
     )
@@ -201,6 +233,7 @@ def render_sidebar(base_cfg: AppConfig) -> dict:
 
     return {
         "provider": provider,
+        "embedding_model": embedding_model,
         "chunk_size": int(chunk_size),
         "chunk_overlap": int(chunk_overlap),
         "min_chunk_size": int(min_chunk_size),
@@ -374,6 +407,23 @@ def render_documents_tab(pipeline: RAGPipeline) -> None:
     c1.metric("Documents", len(summary))
     c2.metric("Total chunks", total_chunks)
     c3.metric("Max page seen", total_pages_est)
+
+    # Show exactly which embedding model these chunks were embedded with.
+    # We prefer the on-disk manifest value because that is the model that
+    # actually produced the current FAISS vectors; fall back to the
+    # pipeline's live config if the manifest is missing.
+    indexed_model: str | None = None
+    if MANIFEST_FILE.exists():
+        try:
+            import json as _json
+            indexed_model = (
+                _json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
+                .get("embedding_model")
+            )
+        except Exception:  # noqa: BLE001
+            indexed_model = None
+    indexed_model = indexed_model or pipeline.config.embedding_model
+    st.caption(f"Embedding model used for this index: `{indexed_model}`")
 
     st.markdown("#### Example chunks")
     examples = pipeline.example_chunks(n_per_doc=2)
@@ -737,7 +787,7 @@ def main() -> None:
     sidebar = render_sidebar(base_cfg)
 
     pipeline = _bootstrap_pipeline(
-        embedding_model=base_cfg.embedding_model,
+        embedding_model=sidebar["embedding_model"],
         chunk_size=sidebar["chunk_size"],
         chunk_overlap=sidebar["chunk_overlap"],
         min_chunk_size=sidebar["min_chunk_size"],
@@ -750,6 +800,38 @@ def main() -> None:
     pipeline.config.min_chunk_size = sidebar["min_chunk_size"]
     pipeline.config.top_k = sidebar["top_k"]
     pipeline.config.min_score = sidebar["min_score"]
+
+    # If the persisted index was built with a different embedding model than
+    # the one currently selected, its vectors live in a different space and
+    # search results would be garbage. Reset the index and tell the user.
+    # We read the manifest from disk (not session_state) so this also covers
+    # the case where the user restarts the app and then picks a new model.
+    persisted_model: str | None = None
+    if MANIFEST_FILE.exists():
+        try:
+            import json as _json
+            persisted_model = (
+                _json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
+                .get("embedding_model")
+            )
+        except Exception:  # noqa: BLE001
+            persisted_model = None
+
+    if (
+        pipeline.is_ready()
+        and persisted_model
+        and persisted_model != sidebar["embedding_model"]
+    ):
+        pipeline.reset_index()
+        st.session_state.last_manifest = None
+        st.session_state.eval_results = None
+        st.session_state.eval_ranks = None
+        _reset_eval_editor_state()
+        st.sidebar.warning(
+            f"Embedding model changed from `{persisted_model}` to "
+            f"`{sidebar['embedding_model']}`. The old index was cleared — "
+            "click **Build / Rebuild Index** to re-embed your PDFs."
+        )
 
     provider_used = pipeline.set_llm_from_config(sidebar["provider"])
 
@@ -802,10 +884,12 @@ def main() -> None:
         n_chunks = len(pipeline.store)
         st.sidebar.success(
             f"Ready — {n_docs} document(s), {n_chunks} chunk(s)\n\n"
+            f"Embedding: `{pipeline.config.embedding_model}`\n\n"
             f"Answering via: `{provider_used}`"
         )
     else:
         st.sidebar.warning("Index is empty — build it to enable chat.")
+        st.sidebar.caption(f"Selected embedding model: `{sidebar['embedding_model']}`")
 
     # Main header + tabs
     st.title(":books: Generative AI RAG Document Q&A Chatbot")

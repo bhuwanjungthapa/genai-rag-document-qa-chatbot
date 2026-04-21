@@ -19,8 +19,10 @@ evaluation.
 - Upload one or more PDFs in the UI.
 - The app extracts page-level text, cleans it, and chunks it (section-aware,
   with recursive fallback and overlap).
-- Chunks are embedded with `sentence-transformers/all-MiniLM-L6-v2` and
-  stored in a local **FAISS** index that persists to disk.
+- Chunks are embedded with a **sidebar-selectable sentence-transformer
+  model** (default `all-MiniLM-L6-v2`, plus `Snowflake/snowflake-arctic-embed-xs`,
+  `BAAI/bge-small-en-v1.5`, and `all-mpnet-base-v2`) and stored in a local
+  **FAISS** index that persists to disk.
 - When you ask a question, the app retrieves the top-k most similar chunks,
   stuffs them into a strict "answer only from this context" prompt, and asks
   **Gemini** (default) or **OpenAI** to generate the answer.
@@ -44,7 +46,7 @@ evaluation.
             └───────┬───────┘
                     ▼
             ┌───────────────┐
-            │   embedder    │ ── all-MiniLM-L6-v2, L2-normalized
+            │   embedder    │ ── configurable model, L2-normalized
             └───────┬───────┘
                     ▼
             ┌───────────────┐
@@ -91,8 +93,10 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-The first run of the app will download the `all-MiniLM-L6-v2` embedding model
-(~90 MB) from Hugging Face and cache it locally.
+The first time you use any embedding model, the app downloads its weights
+from Hugging Face (the default `all-MiniLM-L6-v2` is ~90 MB) and caches
+them locally under `~/.cache/huggingface/`. Subsequent runs with the same
+model load instantly and work offline.
 
 ---
 
@@ -130,10 +134,11 @@ streamlit run app.py
 
 Then:
 
-1. In the sidebar, **upload one or more PDFs**.
-2. Click **Build / Rebuild Index**. Status will show number of documents and
-   chunks. The index is persisted to `indexes/`, so the next run reloads it
-   automatically.
+1. In the sidebar, **upload one or more PDFs** and (optionally) pick an
+   **Embedding model** from the dropdown.
+2. Click **Build / Rebuild Index**. Status will show number of documents,
+   chunks, and the embedding model used. The index is persisted to
+   `indexes/`, so the next run reloads it automatically.
 3. In the **Chat** tab, type your question in the chat input at the bottom.
 4. The answer panel shows the response, citations, and an expandable
    "Retrieved Chunks" section with similarity scores.
@@ -142,11 +147,39 @@ Then:
 
 - The **Documents / Index** tab lists every PDF currently in `data/`.
   Click **Remove** next to a file to delete it from disk and **automatically
-  rebuild the index** from the remaining PDFs.
+  rebuild the index** from the remaining PDFs. The tab also shows the
+  embedding model that produced the current index (read from
+  `indexes/manifest.json`).
 - The sidebar has a **Clear corpus & index** button that wipes `data/` and the
   FAISS index in one click.
 - "Build / Rebuild Index" always rebuilds from whatever is in `data/` at that
   moment — so the index and the files you see always match.
+
+### Choosing / switching embedding models
+
+The sidebar **Embedding model** dropdown currently offers:
+
+| Model | Dim | Size | Notes |
+| --- | ---:| ---:| --- |
+| `sentence-transformers/all-MiniLM-L6-v2` | 384 | ~90 MB | Default. Balanced small English model. |
+| `Snowflake/snowflake-arctic-embed-xs`    | 384 | ~22 MB | Very small and fast, good for low-memory / cold starts. |
+| `BAAI/bge-small-en-v1.5`                 | 384 | ~130 MB | Stronger small retriever, often beats MiniLM on QA. |
+| `sentence-transformers/all-mpnet-base-v2`| 768 | ~420 MB | Larger and more accurate, but slower to download. |
+
+If your `.env` sets `EMBEDDING_MODEL` to a model that isn't in the catalog,
+the custom id is surfaced at the top of the dropdown so your config is
+never overridden.
+
+**What happens when you switch models**
+
+- The new model's weights are downloaded from Hugging Face on first use
+  (one-time; cached under `~/.cache/huggingface/`).
+- Vectors from two different models live in **incompatible spaces**, so the
+  existing FAISS index would return garbage if queried with a new model.
+  The app detects this by comparing the dropdown selection against
+  `indexes/manifest.json` on every rerun. If they differ, the on-disk
+  index is **automatically reset** and a sidebar warning prompts you to
+  click **Build / Rebuild Index** to re-embed your PDFs with the new model.
 
 ---
 
@@ -268,9 +301,12 @@ Streamlit sidebar.
 
 ## 9. Retrieval + grounded answer generation
 
-- **Embeddings.** Queries and chunks are embedded with
-  `sentence-transformers/all-MiniLM-L6-v2` and L2-normalized, so FAISS inner
-  product is equivalent to cosine similarity.
+- **Embeddings.** Queries and chunks are embedded with the same
+  sentence-transformer model selected in the sidebar (default
+  `all-MiniLM-L6-v2`) and L2-normalized, so FAISS inner product is
+  equivalent to cosine similarity. Swapping models from the sidebar
+  automatically resets the index so queries and chunks always share one
+  vector space.
 - **Index.** A simple `faiss.IndexFlatIP` — exact search is perfectly fine at
   this scale and it avoids the ANN recall tradeoff.
 - **Top-k retrieval** with `top_k=4` by default.
@@ -294,8 +330,10 @@ Streamlit sidebar.
 - Heading detection is heuristic. Unusual layouts (multi-column tables,
   slide decks) may produce awkward sections.
 - `all-MiniLM-L6-v2` is a small, fast model; retrieval quality on very long or
-  technical content can be limited. Upgrading to a larger model (e.g. `bge-small-en`)
-  typically improves Hit@k.
+  technical content can be limited. The sidebar **Embedding model** dropdown
+  lets you switch to `bge-small-en-v1.5` or `all-mpnet-base-v2` (or any
+  sentence-transformer id via `EMBEDDING_MODEL` in `.env`) and rebuild —
+  typically improves Hit@k at the cost of a bigger one-time download.
 - The token-overlap "overlap" metric in evaluation is a prioritization signal,
   not a real correctness score. Manual labels remain the ground truth.
 - No user authentication, no database — this is intentional for a local
