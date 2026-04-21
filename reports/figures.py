@@ -1,5 +1,5 @@
 """
-Pure figure builders for the Course Syllabus QA Chatbot report.
+Pure figure builders for the Generative AI RAG Document Q&A Chatbot report.
 
 Each function takes pandas DataFrames and returns a matplotlib Figure.
 No disk I/O happens here - callers decide whether to save (CLI) or render

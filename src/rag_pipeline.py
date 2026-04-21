@@ -75,7 +75,7 @@ class RAGAnswer:
 
 
 INSUFFICIENT_EVIDENCE_MSG = (
-    "I could not find a supported answer in the uploaded course documents."
+    "I could not find a supported answer in the uploaded documents."
 )
 
 

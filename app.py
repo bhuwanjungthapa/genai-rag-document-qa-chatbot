@@ -1,5 +1,5 @@
 """
-Course Syllabus QA Chatbot - Streamlit UI.
+Generative AI RAG Document Q&A Chatbot - Streamlit UI.
 
 Run with:
     streamlit run app.py
@@ -43,7 +43,7 @@ from reports.figures import (
 
 
 st.set_page_config(
-    page_title="Course Syllabus QA Chatbot",
+    page_title="Generative AI RAG Document Q&A Chatbot",
     page_icon=":books:",
     layout="wide",
 )
@@ -229,7 +229,7 @@ def _persist_uploads(uploaded_files) -> list[Path]:
 
 
 def render_chat_tab(pipeline: RAGPipeline) -> None:
-    st.subheader(":speech_balloon: Ask a question about your course documents")
+    st.subheader(":speech_balloon: Ask a question about your documents")
 
     ready = pipeline.is_ready()
     if not ready:
@@ -277,7 +277,7 @@ def render_chat_tab(pipeline: RAGPipeline) -> None:
                     st.text(r.raw_text)
 
     placeholder = (
-        "Ask a question about your course documents..."
+        "Ask a question about your documents..."
         if ready
         else "Build the index first to enable chat"
     )
@@ -808,10 +808,10 @@ def main() -> None:
         st.sidebar.warning("Index is empty — build it to enable chat.")
 
     # Main header + tabs
-    st.title(":books: Course Syllabus QA Chatbot")
+    st.title(":books: Generative AI RAG Document Q&A Chatbot")
     st.caption(
-        "A small RAG app that answers student questions using your uploaded "
-        "syllabus, assignment, and policy PDFs — with citations."
+        "A RAG application that answers your questions from uploaded PDF "
+        "documents using retrieval-augmented generation — with citations."
     )
 
     tab_chat, tab_docs, tab_eval = st.tabs(["Chat", "Documents / Index", "Evaluation"])

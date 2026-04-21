@@ -1,4 +1,4 @@
-# How the Course Syllabus QA Chatbot Works
+# How the Generative AI RAG Document Q&A Chatbot Works
 
 This document explains what the project actually *does* end to end — not the
 language or libraries under the hood, but the **flow of information** from the
@@ -20,7 +20,7 @@ remembers the right policy, we:
 1. **Break the uploaded PDFs into small text pieces ("chunks").**
 2. **Turn each chunk into a numerical fingerprint (an "embedding").**
 3. **Store all the fingerprints in a fast searchable index.**
-4. When a student asks a question, **turn the question into the same kind
+4. When a user asks a question, **turn the question into the same kind
    of fingerprint** and ask the index *"which chunks are closest?"*.
 5. **Hand those few chunks to the LLM** along with the question and tell it:
    *"answer only from this. If it is not here, refuse."*
@@ -79,7 +79,7 @@ Before anything is indexed, the sidebar lets you set:
 
 | Control           | What it controls                                                |
 | ----------------- | --------------------------------------------------------------- |
-| **Upload PDFs**   | Which course documents will become the chatbot's knowledge.     |
+| **Upload PDFs**   | Which documents will become the chatbot's knowledge base.       |
 | **LLM provider**  | Which model writes the final answer (Gemini or OpenAI).         |
 | **chunk_size**    | Maximum characters per chunk. Bigger = more context per chunk.  |
 | **chunk_overlap** | Characters shared with the neighboring chunk. Prevents cut-offs.|
@@ -155,7 +155,7 @@ tab and press Enter:
 
 ```
 ┌─────────────────────────┐
-│  Student question text  │
+│  User question text     │
 └────────────┬────────────┘
              │
              ▼
@@ -279,7 +279,7 @@ A tiny CSV with at most four columns:
 
 | Column       | Required | Meaning                                                    |
 | ------------ | -------- | ---------------------------------------------------------- |
-| `question`   | yes      | The student question to ask.                               |
+| `question`   | yes      | The user question to ask.                                  |
 | `gold_answer`| yes      | A short reference answer you consider correct.             |
 | `gold_doc`   | no       | Filename you expect to contain the supporting text.        |
 | `gold_page`  | no       | Page number (inside `gold_doc`) that has the answer.       |

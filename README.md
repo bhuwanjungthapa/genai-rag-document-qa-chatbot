@@ -1,14 +1,14 @@
-# Course Syllabus Question-Answering Chatbot
+# Generative AI RAG Document Q&A Chatbot
 
-A small, local **RAG (Retrieval-Augmented Generation)** chatbot that answers
-student questions using your own course PDFs — syllabi, assignment handouts,
-and policy documents. Answers are grounded in retrieved context and always
-shown with citations like `[Syllabus.pdf p.3]`.
+A local **RAG (Retrieval-Augmented Generation)** chatbot that answers
+your questions from any uploaded PDF documents. Answers are grounded in
+retrieved context and always shown with citations like
+`[Document.pdf p.3]`.
 
-This project is intentionally kept simple and implementable. It is meant as a
-student-level project that still covers every real RAG concern: ingestion,
-section-aware chunking, embeddings, FAISS vector search, grounded generation,
-logging, and evaluation.
+This project is intentionally kept simple and implementable while still
+covering every real RAG concern: ingestion, section-aware chunking,
+embeddings, FAISS vector search, grounded generation, logging, and
+evaluation.
 
 ---
 
@@ -16,7 +16,7 @@ logging, and evaluation.
 
 **What it does**
 
-- Upload one or more course PDFs in the UI.
+- Upload one or more PDFs in the UI.
 - The app extracts page-level text, cleans it, and chunks it (section-aware,
   with recursive fallback and overlap).
 - Chunks are embedded with `sentence-transformers/all-MiniLM-L6-v2` and
@@ -130,11 +130,11 @@ streamlit run app.py
 
 Then:
 
-1. In the sidebar, **upload one or more PDFs** (syllabus, assignment, policy).
+1. In the sidebar, **upload one or more PDFs**.
 2. Click **Build / Rebuild Index**. Status will show number of documents and
    chunks. The index is persisted to `indexes/`, so the next run reloads it
    automatically.
-3. In the **Chat** tab, click one of the starter questions or type your own.
+3. In the **Chat** tab, type your question in the chat input at the bottom.
 4. The answer panel shows the response, citations, and an expandable
    "Retrieved Chunks" section with similarity scores.
 
@@ -246,7 +246,7 @@ Add your own screenshots here once you run the app:
 
 ## 8. Chunking strategy
 
-The chunker tries to preserve the logical structure of a course document:
+The chunker tries to preserve the logical structure of the source document:
 
 1. **Heading detection.** Each page's text is scanned line-by-line. Lines that
    look like headings ("Week 3", "Section 4.2", ALL-CAPS titles, numbered
@@ -272,16 +272,16 @@ Streamlit sidebar.
   `sentence-transformers/all-MiniLM-L6-v2` and L2-normalized, so FAISS inner
   product is equivalent to cosine similarity.
 - **Index.** A simple `faiss.IndexFlatIP` — exact search is perfectly fine at
-  student-project scale and it avoids the ANN recall tradeoff.
+  this scale and it avoids the ANN recall tradeoff.
 - **Top-k retrieval** with `top_k=4` by default.
 - **Weak-retrieval guardrail.** If the top result's similarity is below
   `MIN_SCORE` (default 0.25), the pipeline short-circuits and returns:
-  _"I could not find a supported answer in the uploaded course documents."_
+  _"I could not find a supported answer in the uploaded documents."_
 - **Strict prompt.** Generation uses the system prompt in
-  `config.ANSWER_SYSTEM_PROMPT`, which forbids invented policies, dates, or
-  grades, forces citations, and hides chain-of-thought.
+  `config.ANSWER_SYSTEM_PROMPT`, which forbids invented facts, dates, or
+  numbers, forces citations, and hides chain-of-thought.
 - **Citations.** The assistant is instructed to cite `[filename p.PAGE]`. The
-  UI also shows all retrieved chunks with their scores so students can verify.
+  UI also shows all retrieved chunks with their scores so users can verify.
 
 ---
 

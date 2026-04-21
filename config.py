@@ -1,5 +1,5 @@
 """
-Central configuration for the Course Syllabus QA Chatbot.
+Central configuration for the Generative AI RAG Document Q&A Chatbot.
 
 All tunable knobs live here. Values are read from environment variables
 (via python-dotenv) with safe defaults, so the app works out of the box.
@@ -92,14 +92,14 @@ class AppConfig:
 
 # The strict, grounded answer prompt used by the generation step.
 ANSWER_SYSTEM_PROMPT = (
-    "You are a course document assistant. Answer the user's question using ONLY "
-    "the provided retrieved context from the uploaded course documents. "
+    "You are a document Q&A assistant. Answer the user's question using ONLY "
+    "the provided retrieved context from the uploaded documents. "
     "If the answer is not clearly supported by the context, reply exactly: "
-    "\"I could not find a supported answer in the uploaded course documents.\" "
-    "Do not invent policies, dates, grades, or deadlines. "
-    "Be concise, factual, and student-friendly. "
+    "\"I could not find a supported answer in the uploaded documents.\" "
+    "Do not invent facts, dates, numbers, policies, or deadlines. "
+    "Be concise, factual, and user-friendly. "
     "At the end of your answer, cite the supporting source(s) in square brackets "
-    "using the format [filename p.PAGE], for example [Syllabus.pdf p.3]. "
+    "using the format [filename p.PAGE], for example [Document.pdf p.3]. "
     "Do not reveal your reasoning or chain-of-thought."
 )
 
@@ -114,7 +114,7 @@ Instructions:
 - Use only the retrieved context above.
 - Cite sources using [filename p.PAGE].
 - If the context does not contain the answer, reply exactly:
-  "I could not find a supported answer in the uploaded course documents."
+  "I could not find a supported answer in the uploaded documents."
 """
 
 # Starter questions shown in the UI.

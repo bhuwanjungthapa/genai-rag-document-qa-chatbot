@@ -1,4 +1,4 @@
-# Course Syllabus QA Chatbot - Python dependencies
+# Generative AI RAG Document Q&A Chatbot - Python dependencies
 # Tested with Python 3.11
 
 # UI
