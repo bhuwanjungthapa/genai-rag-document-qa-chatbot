@@ -85,6 +85,8 @@ Before anything is indexed, the sidebar lets you set:
 | **chunk_size**    | Maximum characters per chunk. Bigger = more context per chunk.  |
 | **chunk_overlap** | Characters shared with the neighboring chunk. Prevents cut-offs.|
 | **min_chunk_size**| Chunks smaller than this are merged into a neighbor.            |
+| **retrieval_mode**| Dense FAISS, BM25 keyword search, or Hybrid BM25 + FAISS.       |
+| **hybrid_alpha**  | In Hybrid mode, how much weight to give the dense FAISS score.  |
 | **top_k**         | How many chunks to retrieve for every question.                 |
 | **min_score**     | Retrieval confidence floor. Below this, the bot refuses to answer.|
 
@@ -168,8 +170,8 @@ tab and press Enter:
       [embed the question]        ← same model used during indexing
              │
              ▼
-   [similarity search in FAISS]   ← compare question vector against every
-             │                      chunk vector; keep the top `top_k`
+   [retrieval search]             ← dense FAISS, BM25 keyword search,
+             │                      or weighted hybrid fusion
              ▼
    ┌─────────────────────┐
    │  top_k chunks +     │
@@ -321,7 +323,7 @@ The **Run evaluation** button does two passes over the questions:
 - **Pass A — full pipeline.** For each question, run the exact same
   chat flow: retrieve → guardrail → LLM → citations. This produces the
   results table with `predicted_answer`, `hit_at_k`, `grounded_or_not`,
-  token-overlap signals, etc.
+  token-overlap signals, semantic similarity, optional BERTScore, etc.
 - **Pass B — retrieval only.** For each question, retrieve the top 10
   chunks *without* calling the LLM, and record the rank at which the
   gold chunk first appears (1 = top result, … , 10 = last; blank if the
@@ -336,6 +338,7 @@ Editable, with the column order tuned for manual grading:
 question | gold_answer | predicted_answer | label | notes |
 hit_at_k | grounded_or_not | retrieved_doc_names | retrieved_pages |
 top_score | overlap_pred_vs_gold | overlap_pred_vs_context
+semantic_similarity_pred_vs_gold | bertscore_f1 | bertscore_precision | bertscore_recall
 ```
 
 The two columns you actually edit are **label** and **notes**:
@@ -366,6 +369,8 @@ Four numbers shown above the charts:
 | **Retrieval Hit@k**            | Fraction of rows whose `gold_doc`/`gold_page` was inside the top `top_k` retrieved chunks. Purely objective; ignores the LLM. |
 | **Correct rate (labeled)**     | Of the rows you have labeled, the share marked **Correct**. |
 | **Hallucination rate (labeled)** | Of the rows you have labeled, the share marked **Hallucinated**. |
+| **Semantic sim.**              | Embedding cosine similarity between the predicted and gold answers. |
+| **Calibration ECE**            | Expected Calibration Error from retrieval confidence buckets versus manual labels. |
 
 A small caption below shows the **grounded-by-guardrail rate** — the
 fraction of answers that were *not* the "I could not find…" refusal.
@@ -373,10 +378,10 @@ This is a sanity check: if it's near 100% but your Correct rate is low,
 the bot is confidently wrong; if it's near 0%, retrieval is probably
 broken.
 
-### 6.6 The five report figures
+### 6.6 The six report figures
 
 Each figure lives inside its own card, can be downloaded as a PNG, and
-all five can be bundled as a single ZIP for your report.
+all six can be bundled as a single ZIP for your report.
 
 #### Figure 1 — Chunks per document
 
@@ -413,11 +418,12 @@ once you label at least one row, and it updates live as you grade more.
 A healthy distribution has most of the mass on `Correct` and
 `Unsupported` (appropriate refusals), with `Hallucinated` close to zero.
 
-#### Figure 4 — Top-1 retrieval score by Hit@1
+#### Figure 4 — Top-1 retrieval confidence by Hit@1
 
-*What it plots:* two overlaid histograms of the top-1 cosine similarity
+*What it plots:* two overlaid histograms of the top-1 retrieval confidence
 score, one for questions where Hit@1 was true (green) and one where it
-was false (red).
+was false (red). In dense mode this is cosine similarity; in hybrid mode
+it is the fused dense/BM25 score.
 
 *Why it matters:* it tells you whether **the similarity score is a
 useful signal for trust**. If the green histogram lives at high scores
@@ -446,6 +452,18 @@ from **generation errors**. The interesting cells are:
 Like Figure 3, this one needs at least one manual label and a
 `gold_doc` column to render.
 
+#### Figure 6 — Calibration by retrieval confidence
+
+*What it plots:* for each top-score bucket, the average retrieval
+confidence next to the empirical correctness implied by your manual
+labels (`Correct = 1.0`, `Partially Correct = 0.5`, `Unsupported` and
+`Hallucinated = 0.0`).
+
+*Why it matters:* it tells you whether the confidence score is calibrated.
+If the average score in a bucket is 0.60 but empirical correctness is
+0.20, the system is over-confident there. The figure also reports ECE
+(Expected Calibration Error), where lower is better.
+
 ---
 
 ## 7. Where reliability comes from
@@ -467,6 +485,10 @@ lifting:
 - **L2-normalized vectors + inner-product FAISS.** Inner product on
   normalized vectors equals cosine similarity, which gives us scores
   bounded roughly in `[-1, 1]` and a clean threshold to talk about.
+- **Hybrid retrieval option.** Dense FAISS is paired with a small BM25
+  sparse retriever. In Hybrid mode, the final score is
+  `alpha * dense_score + (1 - alpha) * bm25_score`, which helps exact
+  course terms and semantic paraphrases reinforce each other.
 - **Confidence guardrail before the LLM.** If the top chunk scores
   below `min_score`, the LLM is never even called. This stops the most
   confident kind of hallucination before it starts.
@@ -534,5 +556,5 @@ That one diagram is essentially the entire project.
   provider, citations, and the exact chunks that were used.
 - **Documents / Index tab** — inspect and curate what the bot knows.
 - **Evaluation tab** — run a question set, grade the answers, and
-  read five charts that separate *retrieval quality* from *answer
+  read six charts that separate *retrieval quality* from *answer
   quality* so you can tell which part of the pipeline to improve next.

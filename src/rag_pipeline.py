@@ -63,6 +63,9 @@ class RAGAnswer:
                     "page_end": r.page_end,
                     "section_title": r.section_title,
                     "chunk_id": r.chunk_id,
+                    "retrieval_source": r.retrieval_source,
+                    "dense_score": r.dense_score,
+                    "bm25_score": r.bm25_score,
                 }
                 for r in self.retrieved
             ],
@@ -255,7 +258,12 @@ class RAGPipeline:
                 provider=self.llm.name,
             )
 
-        retrieved = self.retriever.retrieve(question, top_k=top_k)
+        retrieved = self.retriever.retrieve(
+            question,
+            top_k=top_k,
+            mode=self.config.retrieval_mode,
+            hybrid_alpha=self.config.hybrid_alpha,
+        )
         top_score = retrieved[0].score if retrieved else 0.0
 
         # Guardrail: weak retrieval -> refuse rather than hallucinate.

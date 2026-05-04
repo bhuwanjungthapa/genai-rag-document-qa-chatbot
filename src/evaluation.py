@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import pandas as pd
 
@@ -135,6 +135,158 @@ def compare_answer_to_context(
     }
 
 
+def semantic_similarity(predicted_answer: str, gold_answer: str, embedder) -> Optional[float]:
+    """Cosine similarity between predicted and gold answers using embeddings.
+
+    The project's embedder already returns L2-normalized vectors, so dot product
+    is cosine similarity. Returns None if either answer is empty or embedding
+    fails for any reason.
+    """
+    predicted_answer = str(predicted_answer or "").strip()
+    gold_answer = str(gold_answer or "").strip()
+    if not predicted_answer or not gold_answer:
+        return None
+    try:
+        vectors = embedder.embed([predicted_answer, gold_answer])
+        return round(float(vectors[0].dot(vectors[1])), 4)
+    except Exception:  # noqa: BLE001 - keep evaluation robust in the UI
+        return None
+
+
+def compute_bertscore_batch(
+    predictions: Sequence[str],
+    references: Sequence[str],
+    *,
+    model_type: str = "distilbert-base-uncased",
+) -> list[dict[str, Optional[float]]]:
+    """Compute BERTScore for a batch, returning None values if unavailable.
+
+    BERTScore is optional because it can download a model on first use and is
+    slower than the default retrieval metrics. The app exposes it as an
+    advanced evaluation toggle.
+    """
+    fallback = [
+        {
+            "bertscore_precision": None,
+            "bertscore_recall": None,
+            "bertscore_f1": None,
+        }
+        for _ in predictions
+    ]
+    if not predictions:
+        return fallback
+
+    try:
+        from bert_score import score as bert_score  # type: ignore
+
+        precision, recall, f1 = bert_score(
+            list(predictions),
+            list(references),
+            lang="en",
+            model_type=model_type,
+            verbose=False,
+            rescale_with_baseline=False,
+        )
+    except Exception:  # noqa: BLE001 - optional metric should not break eval
+        return fallback
+
+    return [
+        {
+            "bertscore_precision": round(float(p), 4),
+            "bertscore_recall": round(float(r), 4),
+            "bertscore_f1": round(float(f), 4),
+        }
+        for p, r, f in zip(precision, recall, f1)
+    ]
+
+
+LABEL_TO_CORRECTNESS: dict[str, float] = {
+    "Correct": 1.0,
+    "Partially Correct": 0.5,
+    "Unsupported": 0.0,
+    "Hallucinated": 0.0,
+}
+
+
+def calibration_table(results: pd.DataFrame) -> tuple[pd.DataFrame, Optional[float]]:
+    """Bucket retrieval confidence and compare it with labeled correctness.
+
+    Uses top_score as confidence and manual labels as empirical correctness.
+    Returns (table, ECE). ECE is Expected Calibration Error.
+    """
+    columns = [
+        "bucket",
+        "n",
+        "avg_confidence",
+        "empirical_correctness",
+        "abs_gap",
+        "weight",
+    ]
+    if results is None or results.empty or "label" not in results.columns:
+        return pd.DataFrame(columns=columns), None
+
+    df = results.copy()
+    df["label"] = df["label"].fillna("").astype(str)
+    df = df[df["label"].isin(LABEL_TO_CORRECTNESS)]
+    if df.empty or "top_score" not in df.columns:
+        return pd.DataFrame(columns=columns), None
+
+    df["confidence"] = pd.to_numeric(df["top_score"], errors="coerce").clip(0, 1)
+    df["correctness"] = df["label"].map(LABEL_TO_CORRECTNESS)
+    df = df.dropna(subset=["confidence", "correctness"])
+    if df.empty:
+        return pd.DataFrame(columns=columns), None
+
+    bins = [0.0, 0.25, 0.40, 0.55, 0.70, 1.000001]
+    labels = ["0.00-0.25", "0.25-0.40", "0.40-0.55", "0.55-0.70", "0.70+"]
+    df["bucket"] = pd.cut(
+        df["confidence"],
+        bins=bins,
+        labels=labels,
+        include_lowest=True,
+        right=False,
+    )
+
+    total = len(df)
+    rows = []
+    for label in labels:
+        bucket_df = df[df["bucket"] == label]
+        n = len(bucket_df)
+        if n == 0:
+            rows.append(
+                {
+                    "bucket": label,
+                    "n": 0,
+                    "avg_confidence": None,
+                    "empirical_correctness": None,
+                    "abs_gap": None,
+                    "weight": 0.0,
+                }
+            )
+            continue
+        avg_conf = float(bucket_df["confidence"].mean())
+        empirical = float(bucket_df["correctness"].mean())
+        gap = abs(avg_conf - empirical)
+        rows.append(
+            {
+                "bucket": label,
+                "n": n,
+                "avg_confidence": round(avg_conf, 4),
+                "empirical_correctness": round(empirical, 4),
+                "abs_gap": round(gap, 4),
+                "weight": round(n / total, 4),
+            }
+        )
+
+    table = pd.DataFrame(rows, columns=columns)
+    ece = float(
+        table.dropna(subset=["abs_gap"])
+        .apply(lambda row: row["weight"] * row["abs_gap"], axis=1)
+        .sum()
+    )
+    return table, round(ece, 4)
+
+
 # ---------------------------------------------------------------------------
 # Main runner
 # ---------------------------------------------------------------------------
@@ -152,6 +304,10 @@ class EvalRow:
     top_score: float
     overlap_pred_vs_gold: float
     overlap_pred_vs_context: float
+    semantic_similarity_pred_vs_gold: Optional[float]
+    bertscore_precision: Optional[float]
+    bertscore_recall: Optional[float]
+    bertscore_f1: Optional[float]
     notes: str = ""
     label: str = ""   # Correct / Partially Correct / Unsupported / Hallucinated
 
@@ -163,6 +319,7 @@ def run_evaluation(
     pipeline: RAGPipeline,
     questions_df: pd.DataFrame,
     top_k: Optional[int] = None,
+    compute_bertscore: bool = False,
 ) -> pd.DataFrame:
     """Run each question through the pipeline and return a results DataFrame."""
     required = {"question", "gold_answer"}
@@ -196,6 +353,7 @@ def run_evaluation(
         )
         hit = hit_at_k(ans.retrieved, gold_doc, gold_page)
         overlap = compare_answer_to_context(ans.answer, gold_answer, ans.retrieved)
+        sem_sim = semantic_similarity(ans.answer, gold_answer, pipeline.embedder)
         top_score = ans.retrieved[0].score if ans.retrieved else 0.0
 
         rows.append(
@@ -210,12 +368,24 @@ def run_evaluation(
                 top_score=round(top_score, 4),
                 overlap_pred_vs_gold=overlap["overlap_pred_vs_gold"],
                 overlap_pred_vs_context=overlap["overlap_pred_vs_context"],
+                semantic_similarity_pred_vs_gold=sem_sim,
+                bertscore_precision=None,
+                bertscore_recall=None,
+                bertscore_f1=None,
                 notes="",
                 label="",
             )
         )
 
-    return pd.DataFrame([r.__dict__ for r in rows])
+    results = pd.DataFrame([r.__dict__ for r in rows])
+    if compute_bertscore and not results.empty:
+        bert_scores = compute_bertscore_batch(
+            results["predicted_answer"].fillna("").astype(str).tolist(),
+            results["gold_answer"].fillna("").astype(str).tolist(),
+        )
+        for col in ("bertscore_precision", "bertscore_recall", "bertscore_f1"):
+            results[col] = [score[col] for score in bert_scores]
+    return results
 
 
 def summarize_evaluation(results: pd.DataFrame) -> dict:
@@ -227,6 +397,9 @@ def summarize_evaluation(results: pd.DataFrame) -> dict:
             "correctness_rate": None,
             "hallucination_rate": None,
             "grounded_rate": None,
+            "calibration_ece": None,
+            "semantic_similarity_mean": None,
+            "bertscore_f1_mean": None,
         }
 
     hits = results["hit_at_k"].dropna()
@@ -244,6 +417,15 @@ def summarize_evaluation(results: pd.DataFrame) -> dict:
     )
 
     grounded_rate = float(results["grounded_or_not"].mean())
+    calibration_ece = calibration_table(results)[1]
+    semantic_values = pd.to_numeric(
+        results.get("semantic_similarity_pred_vs_gold", pd.Series(dtype=float)),
+        errors="coerce",
+    ).dropna()
+    bert_f1_values = pd.to_numeric(
+        results.get("bertscore_f1", pd.Series(dtype=float)),
+        errors="coerce",
+    ).dropna()
 
     return {
         "n": int(len(results)),
@@ -252,6 +434,9 @@ def summarize_evaluation(results: pd.DataFrame) -> dict:
         "correctness_rate": correctness_rate,
         "hallucination_rate": hallucination_rate,
         "grounded_rate": grounded_rate,
+        "calibration_ece": calibration_ece,
+        "semantic_similarity_mean": float(semantic_values.mean()) if not semantic_values.empty else None,
+        "bertscore_f1_mean": float(bert_f1_values.mean()) if not bert_f1_values.empty else None,
     }
 
 
@@ -295,7 +480,12 @@ def compute_retrieval_ranks(
             except (TypeError, ValueError):
                 gold_page = None
 
-        retrieved = pipeline.retriever.retrieve(q, top_k=max_k)
+        retrieved = pipeline.retriever.retrieve(
+            q,
+            top_k=max_k,
+            mode=pipeline.config.retrieval_mode,
+            hybrid_alpha=pipeline.config.hybrid_alpha,
+        )
         top_score = float(retrieved[0].score) if retrieved else 0.0
 
         gold_rank: Optional[int] = None

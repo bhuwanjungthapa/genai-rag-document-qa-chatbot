@@ -14,7 +14,7 @@ Usage (run from project root, after building the index in the Streamlit app):
         --out reports/figures
 
 Figures 2 and 4 need a built FAISS index in `indexes/`.
-Figures 3 and 5 need a labeled evaluation_results.csv from the Evaluation tab.
+Figures 3, 5, and 6 need a labeled evaluation_results.csv from the Evaluation tab.
 Figure 1 only needs the persisted chunk metadata.
 """
 
@@ -35,6 +35,7 @@ from src.evaluation import compute_retrieval_ranks, load_questions_csv  # noqa: 
 from src.rag_pipeline import RAGPipeline  # noqa: E402
 
 from reports.figures import (  # noqa: E402
+    fig_calibration,
     fig_chunks_per_doc,
     fig_heatmap,
     fig_hit_at_k,
@@ -119,6 +120,12 @@ def main() -> None:
         _save(fig5, out_dir / "fig5_heatmap.png")
     else:
         print("[skip] figure 5 (need labeled results CSV + built index).")
+
+    fig6 = fig_calibration(results_df)
+    if fig6 is not None:
+        _save(fig6, out_dir / "fig6_calibration.png")
+    else:
+        print("[skip] figure 6 (need labeled results CSV).")
 
     print(f"\nDone. Figures written under: {out_dir.resolve()}")
 

@@ -60,6 +60,10 @@ class AppConfig:
     # Retrieval
     top_k: int = field(default_factory=lambda: _get_int("TOP_K", 4))
     min_score: float = field(default_factory=lambda: _get_float("MIN_SCORE", 0.25))
+    retrieval_mode: str = field(
+        default_factory=lambda: os.getenv("RETRIEVAL_MODE", "hybrid").lower().strip()
+    )
+    hybrid_alpha: float = field(default_factory=lambda: _get_float("HYBRID_ALPHA", 0.65))
 
     # Embeddings
     embedding_model: str = field(

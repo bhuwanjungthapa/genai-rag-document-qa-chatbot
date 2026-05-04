@@ -3,10 +3,24 @@ What is the grading policy for this course?,"Grades are based on assignments, a 
 When is the midterm exam?,The midterm is typically scheduled around week 7; see the course schedule in the syllabus.,CSE 434 _ CSE 534 Syllabus.pdf,5
 What is the late assignment policy?,"Late assignments are penalized per day up to a cap, after which they may not be accepted.",CSE 434 _ CSE 534 Syllabus.pdf,4
 Who is the instructor and what are their office hours?,"The syllabus lists the instructor's name, email, and weekly office hours.",CSE 434 _ CSE 534 Syllabus.pdf,1
-What topics are covered in week 3?,Week 3 covers the topics listed in the course schedule for that week in the syllabus.,CSE 434 _ CSE 534 Syllabus.pdf,5
 What is the expected format for Assignment 1?,Assignment 1 must be submitted in the format described on the assignment handout (usually PDF).,CSE 434 _ CSE 534 Syllabus.pdf,5
 How many points is Assignment 1 worth?,Assignment 1's point value is listed at the top of the assignment PDF.,CSE 434 _ CSE 534 Syllabus.pdf,"4 ,5"
-What is the academic integrity policy?,The course follows the university's academic integrity policy; violations may result in a failing grade.,CSE 434 _ CSE 534 Syllabus.pdf,7
 Are calculators allowed on the final exam?,The syllabus or exam policy document will specify which aids are allowed during exams.,CSE 434 _ CSE 534 Syllabus.pdf,
 How do I contact the teaching assistants?,TA names and contact information are listed in the syllabus or a separate staff page.,CSE 434 _ CSE 534 Syllabus.pdf,2
 What is the name Professor and TA?,"The instructor for the course is Dr. Ohio, and TA is Oxford",CSE 434 _ CSE 534 Syllabus.pdf,"1,2"
+How long is Final Project Presentation time?,The total Presentation time is 8  minutes for Final Presentation.,Final_Project_Presentation_Guideline.pdf,1
+How many slides are nned for final presentation?,Total 9 slides are needed.,Final_Project_Presentation_Guideline.pdf,"1,2,3"
+What is slide 6 for?,Slide six is for methods and system design.,Final_Project_Presentation_Guideline.pdf,2
+In which slide is Reflection and Limitation?,It's on slide 9 of final presentation.,Final_Project_Presentation_Guideline.pdf,3
+What should the comparative analysis be on?,"Comparative analysis should be on baseline, alternative prompts,  with vs without RAG and fine tune vs non-fine tuned models.",Final_Project_Presentation_Guideline.pdf,3
+Which is the most important slide or part?,"Slide 5-6, which Is about methods and system design is marked as one of the most important.",Final_Project_Presentation_Guideline.pdf,2
+Where should I include my team members?,In first slide about Title and Team.,Final_Project_Presentation_Guideline.pdf,1
+How long should Midterm Report should be?,Midterm report should be 2-3 pages.,Midterm_Project_Check_Requirement.pdf,3
+Total marks for Midterm Report.,Total marks for Midterm Report is 100,Midterm_Project_Check_Requirement.pdf,4
+What are extra tast for Graduate Student?,"Graduate students are expected to show greater technical sophistication (e.g., fine-tuning, quantitative evaluation, or state-of-the-art comparison)",Midterm_Project_Check_Requirement.pdf,4
+What is goal of Midterm Report?,"The goal of midterm report is to communicate what has been done, what has been learned, and what is next.",Midterm_Project_Check_Requirement.pdf,2
+Rubric for the Midterm Report.,"Rubric are, Problem definiion 15, dataset 15, methodology 25, preliminary results 25, writing and organization 10 and finally reflection and next steps 10.",Midterm_Project_Check_Requirement.pdf,4
+What is the team size for final project?,1-3 students can form a group but 2-3 is encouraged.,Project_Requirement.pdf,2
+Whar is the timeline for this project?,"Timeline is divided into 4 parts. Part 1: Project requirenments released, Part 2: Proposal Due, Part 3: Mid-Project Check-in and finally Part 4: Final Demo and Report Due",Project_Requirement.pdf,3
+Is there separate requirenment for the graduate?,"Yes, grauate should do integrate research-level methods and provide advanced evaluation metrics and deliver a large and deeper report.",Project_Requirement.pdf,5
+List me text-based project example.,"Prompt Engineering Study, Domain-Specific Summarizier, Rag Chatbot, Bias and safety audit",Project_Requirement.pdf,6

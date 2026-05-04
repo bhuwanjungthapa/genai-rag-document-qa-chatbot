@@ -12,6 +12,7 @@ Figures:
     fig_label_distribution(results_df)           -> Figure | None
     fig_score_hist(ranks_df)                     -> Figure
     fig_heatmap(results_df, ranks_df, k=5)       -> Figure | None
+    fig_calibration(results_df)                  -> Figure | None
 """
 
 from __future__ import annotations
@@ -26,6 +27,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from src.evaluation import calibration_table
 
 
 LABEL_ORDER: list[str] = [
@@ -166,7 +169,7 @@ def fig_label_distribution(results_df: pd.DataFrame | None) -> plt.Figure | None
 
 
 # ---------------------------------------------------------------------------
-# Figure 4 - Top-1 similarity histogram, split by Hit@1
+# Figure 4 - Top-1 retrieval confidence histogram, split by Hit@1
 # ---------------------------------------------------------------------------
 
 
@@ -196,9 +199,9 @@ def fig_score_hist(ranks_df: pd.DataFrame) -> plt.Figure:
             label=f"Hit@1 = False (n={len(miss_scores)})",
             color="#C44E52",
         )
-    ax.set_xlabel("Top-1 retrieval similarity (cosine)")
+    ax.set_xlabel("Top-1 retrieval confidence")
     ax.set_ylabel("Count")
-    ax.set_title(f"Top-1 retrieval score by Hit@1  (n={len(elig)})")
+    ax.set_title(f"Top-1 retrieval confidence by Hit@1  (n={len(elig)})")
     if not elig.empty:
         ax.legend()
 
@@ -264,5 +267,57 @@ def fig_heatmap(
             )
 
     fig.colorbar(im, ax=ax, shrink=0.8)
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Figure 6 - calibration curve / Expected Calibration Error
+# ---------------------------------------------------------------------------
+
+
+def fig_calibration(results_df: pd.DataFrame | None) -> plt.Figure | None:
+    if results_df is None or results_df.empty:
+        return None
+
+    table, ece = calibration_table(results_df)
+    usable = table.dropna(subset=["avg_confidence", "empirical_correctness"])
+    if usable.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(7.5, 4))
+    x = np.arange(len(usable))
+    width = 0.36
+    ax.bar(
+        x - width / 2,
+        usable["avg_confidence"].astype(float),
+        width,
+        label="Avg confidence",
+        color="#4C72B0",
+    )
+    ax.bar(
+        x + width / 2,
+        usable["empirical_correctness"].astype(float),
+        width,
+        label="Empirical correctness",
+        color="#55A868",
+    )
+    ax.set_ylim(0, 1.05)
+    ax.set_xticks(x)
+    ax.set_xticklabels(usable["bucket"].tolist())
+    ax.set_xlabel("Retrieval confidence bucket")
+    ax.set_ylabel("Score")
+    ax.set_title(f"Calibration by retrieval confidence  (ECE={ece:.3f})")
+    for i, row in enumerate(usable.itertuples(index=False)):
+        ax.text(
+            i,
+            1.0,
+            f"n={int(row.n)}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color="#555",
+        )
+    ax.legend()
     fig.tight_layout()
     return fig

@@ -25,6 +25,7 @@ from config import (
 )
 from src.evaluation import (
     VALID_LABELS,
+    calibration_table,
     compute_retrieval_ranks,
     docs_match,
     load_questions_csv,
@@ -33,9 +34,11 @@ from src.evaluation import (
 )
 from src.llm_client import describe_available
 from src.rag_pipeline import RAGPipeline
+from src.retriever import Retriever
 from src.utils import safe_filename
 
 from reports.figures import (
+    fig_calibration,
     fig_chunks_per_doc,
     fig_heatmap,
     fig_hit_at_k,
@@ -64,6 +67,7 @@ def _bootstrap_pipeline(
     min_chunk_size: int,
     top_k: int,
     min_score: float,
+    cache_version: int,
 ) -> RAGPipeline:
     """Build the pipeline once per session; cached on config values."""
     cfg = AppConfig()
@@ -206,6 +210,34 @@ def render_sidebar(base_cfg: AppConfig) -> dict:
     )
 
     st.sidebar.subheader("Retrieval")
+    retrieval_options = ["hybrid", "dense", "bm25"]
+    mode_labels = {
+        "hybrid": "Hybrid BM25 + FAISS",
+        "dense": "Dense FAISS only",
+        "bm25": "BM25 keyword only",
+    }
+    default_mode = (
+        base_cfg.retrieval_mode
+        if base_cfg.retrieval_mode in retrieval_options
+        else "hybrid"
+    )
+    retrieval_mode = st.sidebar.selectbox(
+        "Retrieval mode",
+        options=retrieval_options,
+        index=retrieval_options.index(default_mode),
+        format_func=lambda m: mode_labels[m],
+        help="Hybrid mode combines semantic FAISS search with keyword BM25 search.",
+    )
+    hybrid_alpha = float(base_cfg.hybrid_alpha)
+    if retrieval_mode == "hybrid":
+        hybrid_alpha = st.sidebar.slider(
+            "Hybrid dense weight",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(max(0.0, min(1.0, base_cfg.hybrid_alpha))),
+            step=0.05,
+            help="Higher values favor FAISS semantic search; lower values favor BM25 keyword search.",
+        )
     top_k = st.sidebar.slider("Top-k chunks", min_value=1, max_value=10, value=base_cfg.top_k)
     min_score = st.sidebar.slider(
         "Min retrieval score",
@@ -239,6 +271,8 @@ def render_sidebar(base_cfg: AppConfig) -> dict:
         "min_chunk_size": int(min_chunk_size),
         "top_k": int(top_k),
         "min_score": float(min_score),
+        "retrieval_mode": retrieval_mode,
+        "hybrid_alpha": float(hybrid_alpha),
         "uploaded": uploaded,
         "build_clicked": build_clicked,
         "clear_clicked": clear_clicked,
@@ -302,9 +336,15 @@ def render_chat_tab(pipeline: RAGPipeline) -> None:
                         if r.page_start == r.page_end
                         else f"p.{r.page_start}-{r.page_end}"
                     )
+                    score_parts = [f"score: `{r.score:.3f}`"]
+                    retrieval_source = getattr(r, "retrieval_source", "dense")
+                    if retrieval_source == "hybrid":
+                        score_parts.append(f"dense: `{(getattr(r, 'dense_score', 0) or 0):.3f}`")
+                        score_parts.append(f"bm25: `{(getattr(r, 'bm25_score', 0) or 0):.3f}`")
                     st.markdown(
                         f"**[{i}]** `{r.doc_name}` {page_label} "
-                        f"| score: `{r.score:.3f}` "
+                        f"| {' | '.join(score_parts)} "
+                        f"| mode: `{retrieval_source}` "
                         f"| section: _{r.section_title or '—'}_"
                     )
                     st.text(r.raw_text)
@@ -470,6 +510,15 @@ def render_evaluation_tab(pipeline: RAGPipeline) -> None:
     st.markdown("**Questions preview:**")
     st.dataframe(df, use_container_width=True)
 
+    compute_bertscore = st.checkbox(
+        "Compute BERTScore during evaluation",
+        value=False,
+        help=(
+            "Advanced metric for graduate analysis. It is slower and may download "
+            "a small transformer model the first time it runs."
+        ),
+    )
+
     # --- Retrieval diagnostics: catch gold_doc/filename mismatches ------
     if pipeline.is_ready() and "gold_doc" in df.columns:
         indexed_docs: list[str] = sorted(
@@ -522,10 +571,20 @@ def render_evaluation_tab(pipeline: RAGPipeline) -> None:
             st.error("Build the index first before running evaluation.")
         else:
             with st.spinner("Running questions through the pipeline..."):
-                results = run_evaluation(pipeline, df, top_k=pipeline.config.top_k)
+                results = run_evaluation(
+                    pipeline,
+                    df,
+                    top_k=pipeline.config.top_k,
+                    compute_bertscore=compute_bertscore,
+                )
                 ranks = compute_retrieval_ranks(pipeline, df, max_k=10)
             st.session_state.eval_results = results
             st.session_state.eval_ranks = ranks
+            if compute_bertscore and results["bertscore_f1"].isna().all():
+                st.warning(
+                    "BERTScore was requested but could not be computed. "
+                    "Install `bert-score` and make sure the model can be downloaded."
+                )
             # New rows - clear the editor's diff so old label edits don't try
             # to apply to different questions.
             _reset_eval_editor_state()
@@ -574,6 +633,10 @@ def _render_results_fragment() -> None:
         "retrieved_pages",
         "top_score",
         "overlap_pred_vs_gold",
+        "semantic_similarity_pred_vs_gold",
+        "bertscore_f1",
+        "bertscore_precision",
+        "bertscore_recall",
         "overlap_pred_vs_context",
     ]
     column_order = [c for c in preferred_order if c in results.columns]
@@ -615,7 +678,7 @@ def _render_results_fragment() -> None:
     # Summary metrics
     summary = summarize_evaluation(edited)
     st.markdown("#### Summary metrics")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Questions", summary["n"])
     c2.metric(
         "Retrieval Hit@k",
@@ -635,12 +698,34 @@ def _render_results_fragment() -> None:
         if summary["hallucination_rate"] is not None
         else "—",
     )
-
-    st.caption(
-        f"Grounded-by-guardrail rate: "
-        f"{summary['grounded_rate']:.0%} "
-        f"({summary.get('n_labeled', 0)} rows manually labeled)"
+    c5.metric(
+        "Semantic sim.",
+        f"{summary['semantic_similarity_mean']:.3f}"
+        if summary["semantic_similarity_mean"] is not None
+        else "—",
     )
+    c6.metric(
+        "Calibration ECE",
+        f"{summary['calibration_ece']:.3f}"
+        if summary["calibration_ece"] is not None
+        else "—",
+    )
+
+    bert_note = (
+        f" | Mean BERTScore F1: {summary['bertscore_f1_mean']:.3f}"
+        if summary.get("bertscore_f1_mean") is not None
+        else ""
+    )
+    st.caption(
+        f"Grounded-by-guardrail rate: {summary['grounded_rate']:.0%} "
+        f"({summary.get('n_labeled', 0)} rows manually labeled)"
+        f"{bert_note}"
+    )
+
+    calib_table, calib_ece = calibration_table(edited)
+    if calib_ece is not None:
+        with st.expander("Calibration buckets", expanded=False):
+            st.dataframe(calib_table, use_container_width=True)
 
     # --- CSV / log downloads ---------------------------------------------
     csv_bytes = edited.to_csv(index=False).encode("utf-8")
@@ -666,7 +751,7 @@ def _render_results_fragment() -> None:
     st.markdown("### :bar_chart: Report figures")
     st.caption(
         "Generated from the current evaluation run and your labels. "
-        "Figures 3 and 5 appear once you label at least one row above. "
+        "Figures 3, 5, and 6 appear once you label at least one row above. "
         "Editing the table above updates these charts in place."
     )
 
@@ -728,9 +813,9 @@ def _render_results_fragment() -> None:
             )
             named_figs.append(("fig3_label_distribution.png", f3))
 
-    # Figure 4 - Top-1 score histogram
+    # Figure 4 - Top-1 confidence histogram
     with st.container(border=True):
-        st.markdown("**Figure 4 — Top-1 retrieval score by Hit@1**")
+        st.markdown("**Figure 4 — Top-1 retrieval confidence by Hit@1**")
         if ranks_df.empty or ranks_df["gold_doc"].notna().sum() == 0:
             st.info("Requires a `gold_doc` column and a completed evaluation run.")
         else:
@@ -761,6 +846,23 @@ def _render_results_fragment() -> None:
                 key="dl_fig5",
             )
             named_figs.append(("fig5_heatmap.png", f5))
+
+    # Figure 6 - Calibration curve
+    with st.container(border=True):
+        st.markdown("**Figure 6 — Calibration by retrieval confidence**")
+        f6 = fig_calibration(edited)
+        if f6 is None:
+            st.info("Label at least one row above to compute calibration buckets and ECE.")
+        else:
+            st.pyplot(f6, use_container_width=True)
+            st.download_button(
+                "Download fig6_calibration.png",
+                data=_fig_to_png_bytes(f6),
+                file_name="fig6_calibration.png",
+                mime="image/png",
+                key="dl_fig6",
+            )
+            named_figs.append(("fig6_calibration.png", f6))
 
     # Bundle download
     if named_figs:
@@ -793,6 +895,7 @@ def main() -> None:
         min_chunk_size=sidebar["min_chunk_size"],
         top_k=sidebar["top_k"],
         min_score=sidebar["min_score"],
+        cache_version=2,
     )
     # Keep the pipeline config in sync with sidebar values even if cache hit.
     pipeline.config.chunk_size = sidebar["chunk_size"]
@@ -800,6 +903,12 @@ def main() -> None:
     pipeline.config.min_chunk_size = sidebar["min_chunk_size"]
     pipeline.config.top_k = sidebar["top_k"]
     pipeline.config.min_score = sidebar["min_score"]
+    pipeline.config.retrieval_mode = sidebar["retrieval_mode"]
+    pipeline.config.hybrid_alpha = sidebar["hybrid_alpha"]
+    # Streamlit can keep a cached pipeline object across hot reloads. Rebuild
+    # the lightweight retriever wrapper so cached sessions pick up the current
+    # Retriever.retrieve signature and hybrid/BM25 behavior.
+    pipeline.retriever = Retriever(pipeline.embedder, pipeline.store)
 
     # If the persisted index was built with a different embedding model than
     # the one currently selected, its vectors live in a different space and
@@ -885,6 +994,7 @@ def main() -> None:
         st.sidebar.success(
             f"Ready — {n_docs} document(s), {n_chunks} chunk(s)\n\n"
             f"Embedding: `{pipeline.config.embedding_model}`\n\n"
+            f"Retrieval: `{pipeline.config.retrieval_mode}`\n\n"
             f"Answering via: `{provider_used}`"
         )
     else:

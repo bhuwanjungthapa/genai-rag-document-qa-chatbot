@@ -7,8 +7,8 @@ retrieved context and always shown with citations like
 
 This project is intentionally kept simple and implementable while still
 covering every real RAG concern: ingestion, section-aware chunking,
-embeddings, FAISS vector search, grounded generation, logging, and
-evaluation.
+embeddings, hybrid BM25 + FAISS retrieval, grounded generation, logging,
+and evaluation.
 
 ---
 
@@ -23,14 +23,16 @@ evaluation.
   model** (default `all-MiniLM-L6-v2`, plus `Snowflake/snowflake-arctic-embed-xs`,
   `BAAI/bge-small-en-v1.5`, and `all-mpnet-base-v2`) and stored in a local
   **FAISS** index that persists to disk.
-- When you ask a question, the app retrieves the top-k most similar chunks,
-  stuffs them into a strict "answer only from this context" prompt, and asks
-  **Gemini** (default) or **OpenAI** to generate the answer.
+- When you ask a question, the app retrieves top-k chunks using dense FAISS,
+  sparse BM25, or hybrid score fusion, stuffs them into a strict "answer only
+  from this context" prompt, and asks **Gemini** (default) or **OpenAI** to
+  generate the answer.
 - If retrieval is too weak, the app refuses to answer instead of hallucinating.
 - Every Q&A is logged to `logs/qa_log.jsonl`.
 - An evaluation tab runs a CSV of gold questions through the pipeline and
-  computes Hit@k + lets you label answers as Correct / Partially Correct /
-  Unsupported / Hallucinated.
+  computes Hit@k, semantic similarity, optional BERTScore, calibration/ECE,
+  and manual labels such as Correct / Partially Correct / Unsupported /
+  Hallucinated.
 
 ---
 
@@ -56,7 +58,7 @@ evaluation.
 
 User Question
   → Embed Query
-  → Retrieve Top-k Chunks from FAISS
+  → Retrieve Top-k Chunks from FAISS / BM25 / Hybrid fusion
   → Combine Context + Strict Grounded Prompt
   → LLM (Gemini / OpenAI) Generates Grounded Answer
   → Show Answer + Citations + Retrieved Chunks
@@ -70,7 +72,8 @@ Key modules (all in `src/`):
 | `chunker.py`      | Heading-aware splitting with recursive fallback + tiny-chunk merging. |
 | `embedder.py`     | `sentence-transformers` wrapper that returns L2-normalized vectors. |
 | `vector_store.py` | FAISS `IndexFlatIP` + aligned pandas metadata + save/load. |
-| `retriever.py`    | Combines embedder + store into a `top_k` retriever. |
+| `bm25_retriever.py` | Dependency-free BM25 sparse keyword retriever. |
+| `retriever.py`    | Combines dense FAISS and sparse BM25 retrieval modes. |
 | `llm_client.py`   | Provider abstraction: Gemini, OpenAI, or a safe NullClient. |
 | `rag_pipeline.py` | High-level API: build index, answer, log, weak-retrieval guardrail. |
 | `evaluation.py`   | Hit@k, overlap helper, summary metrics, results dataframe. |
@@ -196,11 +199,13 @@ Open the **Evaluation** tab and either:
 
 Click **Run evaluation**. For each question the pipeline will:
 
-1. Embed the question, retrieve top-k chunks from FAISS.
+1. Embed the question, retrieve top-k chunks using the selected retrieval mode.
 2. Compute **Hit@k** — whether `gold_doc`/`gold_page` appears in retrieved results.
 3. Generate a predicted answer using the selected LLM.
 4. Compute a rough token-overlap signal between predicted answer, gold answer,
    and retrieved context (for grader prioritization — not a final score).
+5. Compute semantic similarity between predicted and gold answers; optionally
+   compute BERTScore if you enable the checkbox.
 
 The results table is editable: mark each row with one of
 **Correct / Partially Correct / Unsupported / Hallucinated** and add notes.
@@ -210,6 +215,7 @@ The summary shows:
 - correctness rate (based on rows you labeled)
 - hallucination rate (based on rows you labeled)
 - grounded-by-guardrail rate (share of answers that passed the min-score gate)
+- calibration ECE from retrieval confidence buckets versus your manual labels
 
 You can download both the results CSV and the full JSONL Q&A log.
 
@@ -220,16 +226,16 @@ exactly what your questions, your PDFs, and your manual labels produce.
 
 ## 6b. Generating report figures
 
-There are two ways to produce the five report figures:
+There are two ways to produce the six report figures:
 
 ### Option A — inside the app (recommended)
 
 In the **Evaluation** tab, click **Run evaluation**. Below the results table
-the app now renders the five figures inline and shows a download button under
+the app now renders the six figures inline and shows a download button under
 each one. There is also a **Download all figures (ZIP)** button at the bottom.
 
 - Figures 1, 2, and 4 appear as soon as evaluation finishes.
-- Figures 3 and 5 unlock the moment you start labeling rows
+- Figures 3, 5, and 6 unlock the moment you start labeling rows
   (Correct / Partially Correct / Unsupported / Hallucinated) — the charts
   update live as you edit.
 
@@ -254,13 +260,14 @@ The files produced are:
 | `fig1_chunks_per_doc.png`     | Corpus description: number of chunks per uploaded document. |
 | `fig2_hit_at_k.png`           | Retrieval quality: Hit@k for k = 1, 3, 5, 10. |
 | `fig3_label_distribution.png` | Answer quality: counts of Correct / Partially Correct / Unsupported / Hallucinated (needs a labeled CSV). |
-| `fig4_score_hist.png`         | Top-1 cosine similarity histogram split by Hit@1 (justifies the `MIN_SCORE` guardrail). |
+| `fig4_score_hist.png`         | Top-1 retrieval confidence histogram split by Hit@1 (justifies the `MIN_SCORE` guardrail). |
 | `fig5_heatmap.png`            | Hit@k × answer label heatmap (ties retrieval success to answer quality). |
+| `fig6_calibration.png`        | Retrieval confidence calibration buckets and Expected Calibration Error (needs labels). |
 
 Notes:
 
 - Figures 2 and 4 need a **built FAISS index** in `indexes/` (build it in the Streamlit app once).
-- Figures 3 and 5 need a **labeled** `evaluation_results.csv` — open the Evaluation tab,
+- Figures 3, 5, and 6 need a **labeled** `evaluation_results.csv` — open the Evaluation tab,
   click **Run evaluation**, label each row, then click **Download results CSV** and
   pass that path via `--results-csv`.
 - If any input is missing the script prints a friendly warning and skips just that figure.
@@ -309,6 +316,9 @@ Streamlit sidebar.
   vector space.
 - **Index.** A simple `faiss.IndexFlatIP` — exact search is perfectly fine at
   this scale and it avoids the ANN recall tradeoff.
+- **Hybrid retrieval.** The sidebar can use dense FAISS only, BM25 keyword
+  retrieval only, or hybrid BM25 + FAISS score fusion. Hybrid mode uses:
+  `final_score = alpha * dense_score + (1 - alpha) * bm25_score`.
 - **Top-k retrieval** with `top_k=4` by default.
 - **Weak-retrieval guardrail.** If the top result's similarity is below
   `MIN_SCORE` (default 0.25), the pipeline short-circuits and returns:
@@ -334,15 +344,15 @@ Streamlit sidebar.
   lets you switch to `bge-small-en-v1.5` or `all-mpnet-base-v2` (or any
   sentence-transformer id via `EMBEDDING_MODEL` in `.env`) and rebuild —
   typically improves Hit@k at the cost of a bigger one-time download.
-- The token-overlap "overlap" metric in evaluation is a prioritization signal,
-  not a real correctness score. Manual labels remain the ground truth.
+- Token overlap remains a prioritization signal. Semantic similarity and
+  optional BERTScore add stronger automated answer-quality signals, but manual
+  labels remain the ground truth.
 - No user authentication, no database — this is intentional for a local
   single-user project.
 
 **Future improvements**
 
 - Add OCR fallback (e.g., `ocrmypdf`) for scanned documents.
-- Hybrid retrieval: combine BM25 + embeddings for better coverage.
 - Re-ranking the retrieved chunks with a small cross-encoder.
 - Per-course indexes (namespaces) with an easy switcher in the UI.
 - Automatic answer-grounding checker that flags claims not supported by any

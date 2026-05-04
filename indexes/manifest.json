@@ -1,0 +1,16 @@
+{
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "chunk_size": 800,
+  "chunk_overlap": 150,
+  "min_chunk_size": 250,
+  "num_documents": 4,
+  "num_pages": 26,
+  "num_chunks": 39,
+  "documents": [
+    "CSE_434___CSE_534_Syllabus.pdf",
+    "Final_Project_Presentation_Guideline.pdf",
+    "Midterm_Project_Check_Requirement.pdf",
+    "Project_Requirement.pdf"
+  ],
+  "built_at": "2026-05-04T00:35:40Z"
+}
