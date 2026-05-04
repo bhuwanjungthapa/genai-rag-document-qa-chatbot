@@ -36,42 +36,75 @@ Everything the app shows on screen is a consequence of that pipeline.
 
 ## 2. Architecture at a glance
 
+The system is two parallel rows that share one FAISS index. **INGEST** writes
+to it (once per document set); **QUERY** reads from it on every question. The
+*same* embedding model is used on both rows, so chunks and questions live in
+one vector space — that one decision is what makes retrieval meaningful.
+
 ```
-                           ┌──────────────────────────────┐
-                           │          Sidebar             │
-                           │  - Upload PDFs               │
-                           │  - Choose LLM (Gemini/OpenAI)│
-                           │  - chunk_size, overlap, k    │
-                           │  - Build / Rebuild Index     │
-                           │  - Clear corpus & index      │
-                           └──────────────┬───────────────┘
-                                          │
-                                          ▼
-                ┌──────────────────────────────────────────┐
-                │             INDEX BUILD                  │
-                │   PDFs  →  pages  →  chunks  →  vectors  │
-                │                                          │
-                │          stored on disk in:              │
-                │            indexes/faiss.index           │
-                │            indexes/chunks.parquet        │
-                │            indexes/manifest.json         │
-                └──────────────────────────────────────────┘
-                                          │
-     ┌────────────────────────────────────┼───────────────────────────────┐
-     ▼                                    ▼                               ▼
- ┌────────────┐                  ┌──────────────────┐              ┌──────────────┐
- │ Chat tab   │                  │ Documents / Index│              │ Evaluation   │
- │            │                  │ tab              │              │ tab          │
- │ Q → embed  │                  │ - list of PDFs   │              │ - load CSV   │
- │ → search   │                  │ - chunks/doc     │              │ - run Qs     │
- │ → LLM      │                  │ - chunk previews │              │ - label      │
- │ → answer + │                  │ - remove a PDF   │              │ - charts     │
- │  citations │                  └──────────────────┘              └──────────────┘
- └────────────┘
+INGEST  (build the index)
+
+  ┌──────┐    ┌───────┐    ┌────────┐    ┌──────────┐    ┌────────────────┐
+  │ PDFs │───▶│ Pages │───▶│ Chunks │───▶│ Vectors  │───▶│  FAISS Index   │
+  └──────┘    └───────┘    └────────┘    └──────────┘    └────────┬───────┘
+   pypdf      cleaned     heading-aware   MiniLM-L6-v2            │
+              text        + recursive     384-d L2-norm           │
+                          (chunk_size,                            │
+                           chunk_overlap,                         │
+                           min_chunk_size)                        │
+                                                                  │ retrieve
+                                                                  │  top-k
+QUERY  (answer a question)                                        │
+                                              ┌───────────────────┘
+                                              ▼
+  ┌──────────┐   ┌──────────────┐   ┌────────────┐   ┌──────┐   ┌─────────────┐
+  │ Question │──▶│Top-k retrieval│──▶│ Guardrail  │──▶│ LLM  │──▶│ Answer +    │
+  └──────────┘   └──────────────┘   └────────────┘   └──────┘   │ citations   │
+   embed         Dense / BM25 /     if score          Gemini    └─────────────┘
+   (same         hybrid α=0.65      < min_score       or GPT-    [filename
+    model)       top-k = 4          → refuse          4o-mini    p.PAGE]
+                                                      (strict
+                                                       prompt)
+
+  Confidence guardrail short-circuits the LLM call when retrieval is weak —
+  this is the primary anti-hallucination defense.
 ```
 
-The four tabs are different *views* on top of one shared index: Chat,
-Documents / Index, Evaluation, and LoRA / QLoRA.
+The four tabs in the Streamlit app are different *views* on top of this
+one pipeline:
+
+```
+                ┌──────────────────────────────┐
+                │          Sidebar             │
+                │  - Upload PDFs               │
+                │  - Choose embedding model    │
+                │  - Choose LLM (Gemini/OpenAI)│
+                │  - chunk_size, overlap, k    │
+                │  - retrieval mode + α        │
+                │  - Build / Rebuild Index     │
+                └──────────────┬───────────────┘
+                               │
+   ┌──────────┬────────────────┼─────────────────┬───────────────┐
+   ▼          ▼                ▼                 ▼               ▼
+┌───────┐ ┌─────────────┐ ┌──────────────┐ ┌────────────────┐
+│ Chat  │ │ Documents / │ │  Evaluation  │ │ LoRA / QLoRA   │
+│ tab   │ │  Index tab  │ │     tab      │ │     tab        │
+│       │ │             │ │              │ │ - dataset      │
+│ Q→A+  │ │ - list PDFs │ │ - load CSV   │ │ - train LoRA   │
+│ cites │ │ - chunks/doc│ │ - run + label│ │ - evaluate     │
+│       │ │ - remove PDF│ │ - 6 figures  │ │ - QLoRA check  │
+│       │ │             │ │              │ │ - try adapter  │
+└───────┘ └─────────────┘ └──────────────┘ └────────────────┘
+
+   read     read+curate       read+grade        write+train
+   index    the corpus        the pipeline       a small adapter
+                              quantitatively     against the same
+                                                 chunks
+```
+
+Outside the app there are three command-line scripts under `reports/`
+that automate the report deliverables (full eval, presentation builder,
+standalone PNG of the architecture diagram). See section 8.
 
 ---
 
@@ -533,13 +566,153 @@ manual correctness labels, and calibration/ECE.
 
 QLoRA usually needs CUDA plus `bitsandbytes` for 4-bit quantized loading.
 The app includes `train_qlora.py --check-only` to report whether the local
-machine is ready. On a typical Mac or CPU-only setup, the honest result is
-that regular LoRA is runnable locally while full QLoRA is a future GPU-backed
-extension.
+machine is ready. The script prints a small JSON like:
+
+```json
+{
+  "bitsandbytes_installed": false,
+  "cuda_available": false,
+  "ready_for_qlora": false,
+  "model": "google/flan-t5-small",
+  "note": "QLoRA is optional here. Use LoRA on google/flan-t5-small for
+           the Mac-friendly experiment; use QLoRA only on a machine with
+           CUDA and bitsandbytes."
+}
+```
+
+On a typical Mac or CPU-only setup, the honest result is that regular
+LoRA is runnable locally while full QLoRA is a future GPU-backed
+extension. **There is no actual QLoRA training code in the project** —
+the file is a readiness check by design, and the project narrative is
+that LoRA on FLAN-T5-small is the practical local experiment.
+
+### 7.5 Trying the adapter (interactive)
+
+After the four buttons above succeed, the **5. Try the adapter** section
+of the LoRA/QLoRA tab loads the base FLAN-T5-small and the base+adapter
+into memory (cached) and lets you generate an answer for any prompt with
+three different context-source modes:
+
+| Mode | Where the context comes from | When to use it |
+| --- | --- | --- |
+| **Auto-retrieve from index** | Runs the question through the FAISS retriever exactly like the Chat tab and pastes the top chunks as context. | Closest to how the production chatbot uses retrieved evidence. Best for honest comparisons. |
+| **Pick a chunk manually** | A dropdown lists every chunk in `indexes/chunks.parquet`; pick one and answer questions against it. | Stress-tests the adapter on a known piece of context, e.g. for slide screenshots. |
+| **Paste my own context** | A text area lets you type or paste arbitrary context. | Edge cases — testing the refusal behavior, ablation against text not in the corpus. |
+
+A "Compare with base FLAN-T5-small" checkbox runs the same prompt
+through the un-adapted base model and shows the two answers side by
+side, plus a small Jaccard-overlap score so you can see at a glance
+whether the adapter changed wording or stayed identical. This is the
+qualitative finding that gets a screenshot on slide 8 of the report deck.
+
+### 7.6 End-to-end smoke test
+
+`experiments/lora_qlora/smoke_test.py` reproduces every step of the
+LoRA / QLoRA workflow plus the three "Try the adapter" modes in code, so
+you can verify the section works without clicking through Streamlit:
+
+```bash
+python experiments/lora_qlora/smoke_test.py
+```
+
+The script runs eleven labeled checks (A–K):
+
+```
+A. dependencies        — transformers, peft, datasets, accelerate, torch
+B. index built         — indexes/chunks.parquet exists and has rows
+C. QA dataset          — train.jsonl + eval.jsonl exist with rows
+D. trained adapter     — adapter_model.safetensors exists
+E. adapter eval summary— adapter_eval_summary.json with a Jaccard mean
+F. QLoRA readiness     — train_qlora.py --check-only returns valid JSON
+G. inference: base     — base FLAN-T5-small generates non-empty text
+H. inference: adapter  — base + LoRA adapter generates non-empty text
+I. UI mode: auto       — pulls chunks from FAISS, runs adapter on them
+J. UI mode: pick       — adapter generates from a known chunk
+K. UI mode: paste      — adapter generates from arbitrary context
+```
+
+A short summary line at the bottom (`SUMMARY: N/11 passed`) makes it
+easy to drop into CI or run after a fresh clone.
 
 ---
 
-## 8. Where reliability comes from
+## 8. Reports & presentation pipeline
+
+Three scripts under `reports/` are the way the project produces its
+report deliverables. They are deliberately decoupled from the Streamlit
+UI so the deck can be regenerated from the command line.
+
+### 8.1 One-shot evaluation runner
+
+```bash
+python reports/run_full_evaluation.py
+```
+
+Runs the full pipeline on `eval/sample_eval_questions.csv` with
+**BERTScore enabled**, applies a heuristic starter label per row, and
+writes:
+
+- `reports/evaluation_results.csv` — every per-row metric, including
+  `bertscore_precision`, `bertscore_recall`, `bertscore_f1`, plus a
+  starter `label` column (auto-applied — review and override in the
+  Streamlit Evaluation tab).
+- `reports/evaluation_summary.json` — headline numbers (Hit@k,
+  correctness rate, hallucination rate, grounded rate, semantic
+  similarity, BERTScore F1 mean, ECE).
+- `reports/figures/fig*.png` — by calling `reports/make_figures.py` at
+  the end, all six report figures are refreshed in one go.
+
+The script also defuses a macOS OpenMP runtime conflict that occurs
+when `faiss`, `torch`, `bert-score`, and `sentence-transformers` are
+loaded together, by setting `KMP_DUPLICATE_LIB_OK`, `OMP_NUM_THREADS`,
+and `TOKENIZERS_PARALLELISM` before any heavy import. The Streamlit
+app does the same.
+
+### 8.2 Presentation builder
+
+```bash
+python reports/build_presentation.py
+```
+
+Produces `reports/Final_Project_Presentation.pptx` — a 9-slide deck
+that follows the project's presentation guideline: title, introduction,
+problem, dataset, methods × 2, results × 2, reflection.
+
+A few things the builder does that are worth knowing about:
+
+- **Slide 5 (architecture)** is drawn natively as PowerPoint shapes:
+  10 rounded rectangles arranged as the INGEST and QUERY rows from
+  section 2 above, plus 8 horizontal arrows and a 3-segment L-shape
+  arrow connecting FAISS Index to the Top-k retrieval box. Every shape
+  is editable directly in PowerPoint.
+- **Headline metrics** on slides 7 and 8 are pulled live from
+  `reports/evaluation_summary.json` and the LoRA training/eval summaries.
+  Re-running `run_full_evaluation.py` first will refresh every number on
+  the slides automatically.
+- **BERTScore precision and recall** are pulled directly from
+  `reports/evaluation_results.csv` (averaged at build time) and added as
+  a small parenthetical after the F1 number on slide 7. If the CSV is
+  missing, the bullet falls back to just F1.
+- **Speaker notes** are added to every slide. Slide 7 includes a
+  "BACKUP IF ASKED ABOUT PRECISION/RECALL" block that connects the
+  recall > precision asymmetry to the "Partially Correct" cell on the
+  slide-8 heatmap.
+
+### 8.3 Standalone architecture PNG
+
+```bash
+python reports/build_architecture_png.py
+```
+
+Produces `reports/figures/architecture_diagram.png` — a high-DPI
+matplotlib rendering of the same INGEST/QUERY two-row diagram that's on
+slide 5. Useful for embedding the architecture in Word documents,
+Google Slides, the README, or anywhere else that doesn't speak
+python-pptx.
+
+---
+
+## 9. Where reliability comes from
 
 A few design choices that are easy to miss but do most of the heavy
 lifting:
@@ -580,7 +753,7 @@ lifting:
 
 ---
 
-## 9. End-to-end flow (single diagram)
+## 10. End-to-end flow (single diagram)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -622,7 +795,9 @@ That one diagram is essentially the entire project.
 
 ---
 
-## 10. TL;DR per UI surface
+## 11. TL;DR per UI surface
+
+In the Streamlit app:
 
 - **Sidebar** — pick a model, pick your knobs, build the index.
 - **Chat tab** — ask a question; you always see the answer, the
@@ -632,5 +807,23 @@ That one diagram is essentially the entire project.
   read six charts that separate *retrieval quality* from *answer
   quality* so you can tell which part of the pipeline to improve next.
 - **LoRA / QLoRA tab** — generate chunk-grounded QA examples, train a
-  FLAN-T5-small LoRA adapter, evaluate it, and check whether the machine
-  can support QLoRA.
+  FLAN-T5-small LoRA adapter, evaluate it, check whether the machine
+  can support QLoRA, and **try the adapter side-by-side with the base
+  model** using auto-retrieved / hand-picked / pasted context.
+
+Outside the app, three command-line scripts produce the report deliverables:
+
+- `python reports/run_full_evaluation.py` — refresh every per-row metric,
+  every figure, and the headline summary in one shot (BERTScore on, auto-
+  labels applied as a starting point).
+- `python reports/build_presentation.py` — regenerate the 9-slide .pptx
+  with the latest numbers and the native PowerPoint architecture diagram
+  on slide 5.
+- `python reports/build_architecture_png.py` — produce a portable PNG of
+  the same architecture diagram for use outside PowerPoint.
+
+And one end-to-end test:
+
+- `python experiments/lora_qlora/smoke_test.py` — eleven labeled checks
+  that verify the entire LoRA / QLoRA section works from dependencies
+  through to the three "Try the adapter" UI modes.
