@@ -25,9 +25,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from lxml import etree
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
+from pptx.enum.text import PP_ALIGN
+from pptx.oxml.ns import qn
 from pptx.util import Inches, Pt
 
 
@@ -40,6 +43,7 @@ LORA_TRAIN_SUMMARY = (
 LORA_EVAL_SUMMARY = (
     PROJECT_ROOT / "experiments" / "lora_qlora" / "results" / "adapter_eval_summary.json"
 )
+EVAL_RESULTS_CSV = PROJECT_ROOT / "reports" / "evaluation_results.csv"
 OUT_PPTX = PROJECT_ROOT / "reports" / "Final_Project_Presentation.pptx"
 
 
@@ -47,6 +51,13 @@ PRIMARY = RGBColor(0x10, 0x3A, 0x5C)   # deep blue
 ACCENT = RGBColor(0xE8, 0x6A, 0x33)    # warm orange
 TEXT_DARK = RGBColor(0x22, 0x22, 0x22)
 SUBTLE = RGBColor(0x66, 0x66, 0x66)
+
+INGEST_FILL = RGBColor(0xDC, 0xE6, 0xF0)   # pale blue (ingest boxes)
+QUERY_FILL = RGBColor(0xF7, 0xE0, 0xCE)    # pale orange (query boxes)
+HUB_FILL = RGBColor(0xFC, 0xCC, 0xA0)      # warmer orange (FAISS bridge)
+ARROW_COLOR = RGBColor(0x4A, 0x4A, 0x4A)
+BOX_BORDER_INGEST = PRIMARY
+BOX_BORDER_QUERY = ACCENT
 
 
 def _load_json(path: Path) -> dict:
@@ -56,6 +67,34 @@ def _load_json(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+
+
+def _load_bertscore_pr_means(path: Path) -> tuple[float | None, float | None]:
+    """Pull mean BERTScore precision and recall from the evaluation CSV.
+
+    The slide 7 headline shows the F1 (already in evaluation_summary.json), but
+    the per-row CSV is the source of truth for precision / recall, so we read
+    them straight from there. Returns (None, None) if the CSV is missing or
+    BERTScore wasn't enabled when the eval was run.
+    """
+    if not path.exists():
+        return (None, None)
+    try:
+        import pandas as pd
+
+        df = pd.read_csv(path)
+    except Exception:  # noqa: BLE001 — slide build should never crash the script
+        return (None, None)
+    p_col = df.get("bertscore_precision")
+    r_col = df.get("bertscore_recall")
+    if p_col is None or r_col is None:
+        return (None, None)
+    p_mean = p_col.dropna().mean() if p_col.dropna().size else None
+    r_mean = r_col.dropna().mean() if r_col.dropna().size else None
+    return (
+        float(p_mean) if p_mean is not None else None,
+        float(r_mean) if r_mean is not None else None,
+    )
 
 
 def _pct(value: float | None, digits: int = 0) -> str:
@@ -105,6 +144,228 @@ def _add_speaker_notes(slide, text: str) -> None:
     notes_tf.text = text
 
 
+# ---------------------------------------------------------------------------
+# Architecture diagram primitives (native PowerPoint shapes, fully editable)
+# ---------------------------------------------------------------------------
+
+
+def _add_arrowhead(connector) -> None:
+    """Add a triangle arrowhead at the END of a connector line."""
+    line = connector.line._get_or_add_ln()
+    existing = line.find(qn("a:tailEnd"))
+    if existing is not None:
+        line.remove(existing)
+    tail = etree.SubElement(line, qn("a:tailEnd"))
+    tail.set("type", "triangle")
+    tail.set("w", "med")
+    tail.set("len", "med")
+
+
+def _draw_box(
+    slide,
+    *,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    title: str,
+    subtitle: str = "",
+    fill: RGBColor,
+    border: RGBColor,
+    title_size: int = 12,
+    sub_size: int = 9,
+) -> None:
+    """A rounded-rectangle node with a bold title and optional small subtitle."""
+    shape = slide.shapes.add_shape(
+        MSO_SHAPE.ROUNDED_RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h)
+    )
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = fill
+    shape.line.color.rgb = border
+    shape.line.width = Pt(1.25)
+    tf = shape.text_frame
+    tf.word_wrap = True
+    tf.margin_left = Inches(0.05)
+    tf.margin_right = Inches(0.05)
+    tf.margin_top = Inches(0.04)
+    tf.margin_bottom = Inches(0.04)
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.CENTER
+    r = p.add_run()
+    r.text = title
+    r.font.bold = True
+    r.font.size = Pt(title_size)
+    r.font.color.rgb = TEXT_DARK
+    if subtitle:
+        for line in subtitle.split("\n"):
+            p2 = tf.add_paragraph()
+            p2.alignment = PP_ALIGN.CENTER
+            r2 = p2.add_run()
+            r2.text = line
+            r2.font.size = Pt(sub_size)
+            r2.font.italic = True
+            r2.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+
+
+def _draw_h_arrow(slide, x_start: float, x_end: float, y: float) -> None:
+    """A horizontal arrow with the arrowhead pointing right."""
+    conn = slide.shapes.add_connector(
+        MSO_CONNECTOR.STRAIGHT, Inches(x_start), Inches(y), Inches(x_end), Inches(y)
+    )
+    conn.line.color.rgb = ARROW_COLOR
+    conn.line.width = Pt(1.5)
+    _add_arrowhead(conn)
+
+
+def _draw_l_arrow(
+    slide,
+    x_start: float,
+    y_start: float,
+    x_end: float,
+    y_end: float,
+    mid_y: float,
+    label: str = "",
+) -> None:
+    """L-shape connector: down → left/right → down, arrowhead at the final endpoint.
+
+    Used to connect FAISS Index (top row) to the retrieval box (bottom row),
+    since they're not vertically aligned.
+    """
+    seg1 = slide.shapes.add_connector(
+        MSO_CONNECTOR.STRAIGHT, Inches(x_start), Inches(y_start), Inches(x_start), Inches(mid_y)
+    )
+    seg1.line.color.rgb = ARROW_COLOR
+    seg1.line.width = Pt(1.75)
+
+    seg2 = slide.shapes.add_connector(
+        MSO_CONNECTOR.STRAIGHT, Inches(x_start), Inches(mid_y), Inches(x_end), Inches(mid_y)
+    )
+    seg2.line.color.rgb = ARROW_COLOR
+    seg2.line.width = Pt(1.75)
+
+    seg3 = slide.shapes.add_connector(
+        MSO_CONNECTOR.STRAIGHT, Inches(x_end), Inches(mid_y), Inches(x_end), Inches(y_end)
+    )
+    seg3.line.color.rgb = ARROW_COLOR
+    seg3.line.width = Pt(1.75)
+    _add_arrowhead(seg3)
+
+    if label:
+        text_left = min(x_start, x_end) + 0.1
+        text_w = abs(x_end - x_start) - 0.2
+        tb = slide.shapes.add_textbox(
+            Inches(text_left), Inches(mid_y - 0.32), Inches(max(text_w, 0.5)), Inches(0.25)
+        ).text_frame
+        p = tb.paragraphs[0]
+        p.alignment = PP_ALIGN.CENTER
+        r = p.add_run()
+        r.text = label
+        r.font.size = Pt(10)
+        r.font.italic = True
+        r.font.color.rgb = ARROW_COLOR
+
+
+def _add_section_label(slide, x: float, y: float, text: str, color: RGBColor) -> None:
+    box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(2.5), Inches(0.3)).text_frame
+    p = box.paragraphs[0]
+    r = p.add_run()
+    r.text = text
+    r.font.bold = True
+    r.font.size = Pt(13)
+    r.font.color.rgb = color
+
+
+def _draw_architecture_diagram(slide, top_y: float = 2.0) -> None:
+    """Two horizontal rows (INGEST / QUERY) connected by an L-shape arrow.
+
+    INGEST: PDFs → Pages → Chunks → Vectors → FAISS Index
+    QUERY:  User question → Top-k retrieval → Guardrail → LLM → Answer + citations
+    Cross-arrow: FAISS Index (last box, row 1) → Top-k retrieval (2nd box, row 2)
+    """
+    SLIDE_WIDTH = 13.33
+    BOX_W, BOX_H = 1.95, 0.95
+    GAP = 0.35
+    LABEL_H = 0.30
+    ROW_GAP = 0.85
+
+    total_w = 5 * BOX_W + 4 * GAP
+    left_margin = (SLIDE_WIDTH - total_w) / 2
+    box_x = [left_margin + i * (BOX_W + GAP) for i in range(5)]
+
+    label1_y = top_y + 0.05
+    row1_y = label1_y + LABEL_H
+    label2_y = row1_y + BOX_H + ROW_GAP - 0.10
+    row2_y = label2_y + LABEL_H
+    caption_y = row2_y + BOX_H + 0.20
+
+    _add_section_label(slide, 0.4, label1_y, "INGEST  (build the index)", PRIMARY)
+    _add_section_label(slide, 0.4, label2_y, "QUERY  (answer a question)", ACCENT)
+
+    ingest = [
+        ("PDFs", "uploaded course\ndocuments"),
+        ("Pages", "pypdf\nper-page text"),
+        ("Chunks", "heading-aware\n+ recursive split\n(800 chars, overlap 150)"),
+        ("Vectors", "MiniLM-L6-v2\n384-d embeddings\nL2-normalized"),
+        ("FAISS Index", "IndexFlatIP\npersisted on disk"),
+    ]
+    for i, (title, sub) in enumerate(ingest):
+        fill = HUB_FILL if i == 4 else INGEST_FILL
+        _draw_box(
+            slide,
+            x=box_x[i], y=row1_y, w=BOX_W, h=BOX_H,
+            title=title, subtitle=sub,
+            fill=fill, border=BOX_BORDER_INGEST,
+        )
+    for i in range(4):
+        _draw_h_arrow(slide, box_x[i] + BOX_W, box_x[i + 1], row1_y + BOX_H / 2)
+
+    query = [
+        ("User question", "free-form\ntext input"),
+        ("Top-k retrieval", "Dense / BM25 /\nhybrid (α = 0.65)\ntop-k = 4"),
+        ("Confidence\nguardrail", "if top score\n< min_score (0.25)\n→ refuse"),
+        ("LLM", "Gemini-1.5-flash\nor GPT-4o-mini\n(strict prompt)"),
+        ("Answer +\ncitations", "[file p.PAGE]\ngrounded or refused"),
+    ]
+    for i, (title, sub) in enumerate(query):
+        _draw_box(
+            slide,
+            x=box_x[i], y=row2_y, w=BOX_W, h=BOX_H,
+            title=title, subtitle=sub,
+            fill=QUERY_FILL, border=BOX_BORDER_QUERY,
+        )
+    for i in range(4):
+        _draw_h_arrow(slide, box_x[i] + BOX_W, box_x[i + 1], row2_y + BOX_H / 2)
+
+    # Cross-arrow: FAISS Index (top, last) -> Top-k retrieval (bottom, second box)
+    faiss_center_x = box_x[4] + BOX_W / 2
+    topk_center_x = box_x[1] + BOX_W / 2
+    bridge_y = (row1_y + BOX_H + row2_y) / 2
+    _draw_l_arrow(
+        slide,
+        x_start=faiss_center_x, y_start=row1_y + BOX_H,
+        x_end=topk_center_x, y_end=row2_y,
+        mid_y=bridge_y,
+        label="retrieve  (same vector space ⇒ same embedding model)",
+    )
+
+    # Caption underneath
+    cap = slide.shapes.add_textbox(
+        Inches(0.4), Inches(caption_y), Inches(12.5), Inches(0.3)
+    ).text_frame
+    cap.word_wrap = True
+    p = cap.paragraphs[0]
+    p.alignment = PP_ALIGN.CENTER
+    r = p.add_run()
+    r.text = (
+        "QUERY reads from the FAISS index built by INGEST. The confidence "
+        "guardrail short-circuits the LLM call when retrieval is weak — "
+        "this is the primary anti-hallucination defense."
+    )
+    r.font.size = Pt(11)
+    r.font.italic = True
+    r.font.color.rgb = SUBTLE
+
+
 def _add_image(slide, image_path: Path, left: float, top: float, width: float | None = None,
                height: float | None = None) -> None:
     if not image_path.exists():
@@ -136,6 +397,14 @@ def build() -> Path:
     grounded_rate = _pct(eval_summary.get("grounded_rate"))
     sem_sim = _num(eval_summary.get("semantic_similarity_mean"), 2)
     bert_f1 = _num(eval_summary.get("bertscore_f1_mean"), 2)
+    bert_p_val, bert_r_val = _load_bertscore_pr_means(EVAL_RESULTS_CSV)
+    bert_p = _num(bert_p_val, 2)
+    bert_r = _num(bert_r_val, 2)
+    bert_pr_suffix = (
+        f" (precision {bert_p}, recall {bert_r})"
+        if bert_p_val is not None and bert_r_val is not None
+        else ""
+    )
     ece = _num(eval_summary.get("calibration_ece"), 3)
     n_eval = int(eval_summary.get("n", 0))
 
@@ -280,52 +549,46 @@ def build() -> Path:
     ))
 
     # -----------------------------------------------------------------
-    # Slide 5 — System architecture
+    # Slide 5 — System architecture (native PowerPoint diagram)
     # -----------------------------------------------------------------
     s = prs.slides.add_slide(blank)
     _add_title_bar(s, "Methods — System Architecture")
-    _add_bullets(s, [
-        "INGEST: PDFs → pypdf pages → heading-aware + recursive chunker → sentence-transformers embedder → FAISS IndexFlatIP (L2-normalized, persisted on disk).",
-        "QUERY: question → embed with same model → retrieve top-k chunks (Dense FAISS / BM25 / Hybrid α-fusion) → confidence guardrail (min_score) → strict prompt → Gemini or OpenAI → grounded answer + citations.",
-        "FOUR-TAB UI: Chat (ask), Documents/Index (curate), Evaluation (measure + label + 6 figures), LoRA/QLoRA (fine-tune + try the adapter).",
-        "REPRODUCIBILITY: indexes/manifest.json records embedding model, chunk size, document set, build time. Switching the embedding model auto-resets the stale index.",
-    ], top=1.1, height=2.6, font_size=16)
+    _add_bullets(
+        s,
+        [
+            "INGEST (top row) — each PDF is split into section-aware chunks, embedded with all-MiniLM-L6-v2, and stored as L2-normalized vectors in a FAISS index.",
+            "QUERY (bottom row) — the same model embeds the question; top-k chunks are retrieved (dense / BM25 / hybrid) and a confidence guardrail short-circuits the LLM call when retrieval is weak.",
+            "GENERATE — only the retrieved chunks plus the question reach the LLM under a strict context-only prompt that forces citations as [filename p.PAGE].",
+        ],
+        top=1.05,
+        height=1.7,
+        font_size=14,
+    )
 
-    # Try to embed the chunks-per-doc figure as a visual anchor
-    fig1 = FIGURES / "fig1_chunks_per_doc.png"
-    if fig1.exists():
-        _add_image(s, fig1, left=0.6, top=4.1, height=2.9)
-    note_box = s.shapes.add_textbox(Inches(7.5), Inches(4.1), Inches(5.3), Inches(2.9)).text_frame
-    note_box.word_wrap = True
-    for i, line in enumerate([
-        "Stack at a glance:",
-        "• Embeddings: sentence-transformers (swappable: MiniLM / BGE / MPNet / Arctic).",
-        "• Index: FAISS IndexFlatIP — exact search at this scale.",
-        "• Retrieval: Dense FAISS, sparse BM25, or hybrid score fusion.",
-        "• LLM: Gemini-1.5-flash (default) or GPT-4o-mini, swappable at runtime.",
-        "• Guardrail: top score < min_score → refuse instead of calling the LLM.",
-    ]):
-        p = note_box.paragraphs[0] if i == 0 else note_box.add_paragraph()
-        p.text = line
-        p.font.size = Pt(14)
-        p.font.color.rgb = TEXT_DARK
-        if i == 0:
-            p.font.bold = True
+    _draw_architecture_diagram(s, top_y=2.7)
+
     _add_speaker_notes(s, (
         "TIME: ~1 minute (slide 1 of 2 in methods).\n\n"
-        "SAY: 'On the ingestion side, PDFs become pages, pages become "
-        "chunks, chunks become L2-normalized vectors, and the vectors live "
-        "in a FAISS index that is persisted to disk along with chunk "
-        "metadata in a parquet file and a manifest JSON.'\n\n"
-        "SAY: 'On the query side, the user question is embedded with the "
-        "exact same model, retrieval pulls top-k chunks using one of three "
-        "modes — dense, sparse, or a weighted hybrid — and a confidence "
-        "guardrail short-circuits before the LLM is even called when the "
-        "top score is too low. That guardrail is the single most important "
-        "anti-hallucination defense.'\n\n"
-        "POINT TO FIGURE: 'On the left you can see the per-document chunk "
-        "counts so the audience can sanity-check that no PDF was silently "
-        "dropped during ingestion.'"
+        "WALK THE DIAGRAM TOP TO BOTTOM:\n\n"
+        "SAY: 'The top row is INGEST. Each uploaded PDF is read page-by-page "
+        "with pypdf, split into roughly 800-character section-aware chunks, "
+        "embedded with all-MiniLM-L6-v2 into 384-dimensional L2-normalized "
+        "vectors, and stored in a flat FAISS index that is persisted to "
+        "disk.'\n\n"
+        "SAY: 'The bottom row is QUERY. The user question is embedded with "
+        "the exact same model so the question vector lives in the same "
+        "space as the chunk vectors — that is what the long arrow in the "
+        "middle is showing. Top-k retrieval pulls the closest chunks using "
+        "dense FAISS, sparse BM25, or a weighted hybrid. Then comes the "
+        "single most important box on the slide — the confidence guardrail. "
+        "If the top similarity score is below 0.25, the pipeline refuses to "
+        "even call the LLM, returning a fixed unsupported sentence. That "
+        "one check is our primary anti-hallucination defense.'\n\n"
+        "SAY: 'Only when retrieval is strong does the question plus chunks "
+        "go to the LLM under a strict prompt that forces context-only "
+        "answers and citations like [Syllabus.pdf p.3]. The final answer "
+        "is shown to the user with the citations and the retrieved chunks "
+        "for transparency.'"
     ))
 
     # -----------------------------------------------------------------
@@ -334,13 +597,13 @@ def build() -> Path:
     s = prs.slides.add_slide(blank)
     _add_title_bar(s, "Methods — Choices, Rationale & Constraints")
     _add_bullets(s, [
-        "Embedding model: all-MiniLM-L6-v2 default (small, fast, free, ~90 MB). Sidebar dropdown lets us swap to BGE-small, MPNet, or Arctic-xs and rebuild.",
-        "Hybrid retrieval: final_score = α · dense_score + (1 − α) · BM25, default α=0.65. Helps exact course terms (e.g. \"Week 3\") and paraphrases reinforce each other.",
-        "Strict grounded prompt: \"answer ONLY from this context, refuse otherwise, cite [filename p.PAGE]\". The exact refusal sentence is detected to flip the grounded_or_not flag.",
-        "LoRA experiment: PEFT adapter on the q/v attention modules of FLAN-T5-small (rank 8, α 16, dropout 0.05). Only ~1.4 MB of weights are trained — base model stays frozen.",
-        "QLoRA path: included as a readiness check (CUDA + bitsandbytes). On Mac/CPU it correctly reports unavailable; LoRA is the practical local path.",
-        "Engineering constraints handled: API rate limits → temperature 0.1 + concise prompts; CPU-only training; reproducible manifests; embedding-mismatch guard auto-resets stale indexes.",
-    ], font_size=16)
+        "Embedding model: all-MiniLM-L6-v2 default (small, fast, ~90 MB). Sidebar dropdown lets us swap to BGE-small, MPNet, or Arctic-xs and rebuild.",
+        "Hybrid retrieval: final_score = α · dense + (1 − α) · BM25, default α = 0.65. Lets exact course terms (\"Week 3\") and paraphrases reinforce each other.",
+        "Strict grounded prompt: \"answer ONLY from this context, refuse otherwise, cite [filename p.PAGE]\". The exact refusal sentence flips the grounded_or_not flag automatically.",
+        "LoRA fine-tune of FLAN-T5-small: base model stays frozen; we train only a 1.3 MB rank-8 patch on the q/v attention layers — 99 auto-generated Q&A pairs, 3 epochs, runs on Mac CPU.",
+        "QLoRA: optional GPU-only path exposed as a readiness check. On Mac it correctly reports \"not ready\" (no CUDA / bitsandbytes), which is why LoRA is the path we actually run end-to-end.",
+        "Engineering trade-offs: low temperature (0.1) + tight prompts to control cost; CPU-only training and indexing; every index ships with a manifest.json so swapping the embedding model auto-clears the stale index.",
+    ], font_size=15)
     _add_speaker_notes(s, (
         "TIME: ~1 minute (slide 2 of 2 in methods).\n\n"
         "SAY: 'A few design choices worth calling out. First, we use a small "
@@ -355,11 +618,28 @@ def build() -> Path:
         "to refuse with a fixed sentence if the context does not support an "
         "answer, and we detect that exact sentence to mark the answer as "
         "ungrounded.'\n\n"
-        "SAY: 'For the LoRA experiment, we attach a PEFT adapter to just the "
-        "query and value attention matrices of FLAN-T5-small — that is about "
-        "1.4 megabytes of weights — and we keep the base model frozen. QLoRA "
-        "is wired in but it requires CUDA and bitsandbytes; on a Mac the "
-        "honest answer is that LoRA is the practical local option.'"
+        "SAY (LoRA): 'For fine-tuning, we ran a real LoRA experiment, not "
+        "just a placeholder. We took FLAN-T5-small, FROZE the entire base "
+        "model, and trained a tiny adapter — about 1.3 megabytes of weights "
+        "— on just the query and value attention layers, using 99 "
+        "question-answer pairs we generated from our own PDFs. The whole "
+        "thing trains in a few minutes on a Mac CPU, and the held-out "
+        "Jaccard score went up to roughly 0.68, so the adapter actually "
+        "learned the document style.'\n\n"
+        "SAY (QLoRA): 'We also wired in QLoRA as an OPTIONAL path. QLoRA "
+        "needs an NVIDIA GPU and the bitsandbytes library, neither of "
+        "which exist on a Mac, so the app exposes it as a one-click "
+        "readiness check that correctly reports \"not available\" on this "
+        "machine. The actual experiment we run end-to-end is plain LoRA.'\n\n"
+        "SAY (engineering): 'Three pragmatic choices worth flagging. One — "
+        "every LLM call uses low temperature (0.1) and a tight prompt to "
+        "keep cost and rate limits in check. Two — training and indexing "
+        "are CPU-only, no GPU required. And three — every index we build "
+        "ships with a manifest.json that records the embedding model and "
+        "chunk settings; if a teammate switches the embedding model in the "
+        "sidebar, the app detects the mismatch and CLEARS the stale index "
+        "automatically — that prevents the silent failure of querying with "
+        "one model while the index was built with another.'"
     ))
 
     # -----------------------------------------------------------------
@@ -371,7 +651,7 @@ def build() -> Path:
         f"Evaluation set: {n_eval} gold questions over the 4 indexed PDFs.",
         f"Retrieval Hit@k: {hit_rate}.   Grounded-by-guardrail rate: {grounded_rate}.",
         f"Manual + auto-labeled correctness rate: {correct_rate}.   Hallucination rate: {halluc_rate}.",
-        f"Semantic similarity (pred vs gold): {sem_sim}.   BERTScore F1: {bert_f1}.",
+        f"Semantic similarity (pred vs gold): {sem_sim}.   BERTScore F1: {bert_f1}{bert_pr_suffix}.",
         f"Calibration: ECE = {ece} (top-1 confidence vs labeled correctness).",
         f"LoRA experiment ({lora_train_n} train / {lora_eval_n} eval, 3 epochs, lr 5e-4):  eval_loss = {_num(lora_loss, 3)},  mean Jaccard = {_num(lora_jaccard, 3)}.",
     ]
@@ -385,6 +665,17 @@ def build() -> Path:
         _add_image(s, fig6, left=6.7, top=4.1, height=3.0)
     _add_footer(s, "Left: Retrieval Hit@k for k = 1, 3, 5, 10.   Right: Calibration of top-1 retrieval confidence vs labeled correctness (ECE).")
 
+    if bert_p_val is not None and bert_r_val is not None:
+        bert_pr_block = (
+            f"BACKUP IF ASKED ABOUT PRECISION/RECALL: 'BERTScore precision is "
+            f"{bert_p} and recall is {bert_r}. Recall higher than precision means "
+            "our answers cover the gold thoroughly but tend to be a bit verbose — "
+            "citations, surrounding context, hedging — which lines up with the "
+            "Partially Correct bucket on the slide-8 heatmap.'\n\n"
+        )
+    else:
+        bert_pr_block = ""
+
     _add_speaker_notes(s, (
         "TIME: ~1 minute (slide 1 of 2 in results).\n\n"
         f"SAY: 'On {n_eval} gold questions, retrieval finds the right document "
@@ -397,6 +688,7 @@ def build() -> Path:
         f"calibration ECE — how well the retrieval confidence score lines "
         f"up with empirical correctness — is {ece}, which is reasonable for "
         "an unblinded run.'\n\n"
+        f"{bert_pr_block}"
         f"SAY: 'For the LoRA experiment we trained for 3 epochs on "
         f"{lora_train_n} examples in about 3 minutes on CPU and reached an "
         f"eval loss of {_num(lora_loss, 3)} and a held-out Jaccard overlap "
