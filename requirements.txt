@@ -22,6 +22,12 @@ matplotlib>=3.8,<4.0
 # Advanced evaluation (optional in the UI; can download a model on first use)
 bert-score>=0.3.13,<1.0
 
+# LoRA / QLoRA experiment
+transformers>=4.41,<5.0
+datasets>=2.20,<4.0
+peft>=0.11,<1.0
+accelerate>=0.30,<2.0
+
 # Config / env
 python-dotenv>=1.0,<2.0
 

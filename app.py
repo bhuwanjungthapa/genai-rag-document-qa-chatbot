@@ -7,7 +7,27 @@ Run with:
 
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# IMPORTANT: defuse macOS OpenMP / MKL conflicts before any heavy import.
+#
+# faiss, torch (via sentence-transformers), and bert-score each ship their own
+# OpenMP runtime. When all three are loaded into the same Python process on
+# macOS / arm64 they collide and the process segfaults (exit 139) — typically
+# the moment "Run evaluation" is clicked with "Compute BERTScore" enabled.
+# These three env vars must be set BEFORE numpy / faiss / torch are imported,
+# so they live at the very top of this module.
+# ---------------------------------------------------------------------------
+import os
+
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+import importlib.util
 import io
+import json
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -45,6 +65,16 @@ from reports.figures import (
     fig_label_distribution,
     fig_score_hist,
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+LORA_EXPERIMENT_DIR = PROJECT_ROOT / "experiments" / "lora_qlora"
+LORA_DATA_DIR = LORA_EXPERIMENT_DIR / "data"
+LORA_TRAIN_FILE = LORA_DATA_DIR / "train.jsonl"
+LORA_EVAL_FILE = LORA_DATA_DIR / "eval.jsonl"
+LORA_ADAPTER_DIR = LORA_EXPERIMENT_DIR / "adapters" / "flan-t5-small-lora"
+LORA_RESULTS_DIR = LORA_EXPERIMENT_DIR / "results"
+LORA_EVAL_SUMMARY_FILE = LORA_RESULTS_DIR / "adapter_eval_summary.json"
 
 
 st.set_page_config(
@@ -139,6 +169,140 @@ def _figures_to_zip_bytes(named_figs: list[tuple[str, object]]) -> bytes:
             z.writestr(name, _fig_to_png_bytes(fig))
     zip_buf.seek(0)
     return zip_buf.getvalue()
+
+
+def _count_jsonl(path: Path) -> int:
+    """Count non-empty JSONL rows without loading the full file."""
+    if not path.exists():
+        return 0
+    with path.open("r", encoding="utf-8") as f:
+        return sum(1 for line in f if line.strip())
+
+
+def _load_json_file(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
+def _tail_text(text: str, limit: int = 6000) -> str:
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    return "... output truncated ...\n" + text[-limit:]
+
+
+def _run_lora_script(script_name: str, args: list[str] | None = None) -> subprocess.CompletedProcess:
+    """Run one of the local LoRA experiment scripts in the app's venv."""
+    cmd = [sys.executable, str(LORA_EXPERIMENT_DIR / script_name)]
+    cmd.extend(args or [])
+    return subprocess.run(
+        cmd,
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _render_process_result(result: subprocess.CompletedProcess) -> None:
+    if result.returncode == 0:
+        st.success("Command completed successfully.")
+    else:
+        st.error(f"Command failed with exit code {result.returncode}.")
+    if result.stdout.strip():
+        st.markdown("**stdout**")
+        st.code(_tail_text(result.stdout), language="text")
+    if result.stderr.strip():
+        st.markdown("**stderr**")
+        st.code(_tail_text(result.stderr), language="text")
+
+
+def _package_available(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
+
+
+# ---------------------------------------------------------------------------
+# LoRA inference helpers (used by the "Try the adapter" UI section)
+# ---------------------------------------------------------------------------
+
+
+def _format_lora_prompt(instruction: str, context: str, question: str) -> str:
+    """Match the training prompt format used in train_lora.format_source."""
+    return (
+        f"Instruction: {instruction}\n"
+        f"Context: {context}\n"
+        f"Question: {question}\n"
+        "Answer:"
+    )
+
+
+def _adapter_signature(adapter_dir: Path) -> str:
+    """A cache-key string that changes whenever the saved adapter weights change."""
+    weights = adapter_dir / "adapter_model.safetensors"
+    if not weights.exists():
+        return "missing"
+    return f"{int(weights.stat().st_mtime)}-{weights.stat().st_size}"
+
+
+@st.cache_resource(show_spinner="Loading FLAN-T5 base model...")
+def _load_flan_base(model_id: str):
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
+    model.eval()
+    return tokenizer, model
+
+
+@st.cache_resource(show_spinner="Loading LoRA adapter on top of FLAN-T5...")
+def _load_flan_with_adapter(model_id: str, adapter_dir: str, adapter_signature: str):
+    """`adapter_signature` is part of the cache key so retraining busts the cache."""
+    from peft import PeftModel
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+    adapter_path = Path(adapter_dir)
+    tokenizer_src = (
+        adapter_path
+        if (adapter_path / "tokenizer_config.json").exists()
+        else model_id
+    )
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_src)
+    base = AutoModelForSeq2SeqLM.from_pretrained(model_id)
+    model = PeftModel.from_pretrained(base, adapter_path)
+    model.eval()
+    return tokenizer, model
+
+
+def _generate_text(tokenizer, model, prompt: str, max_new_tokens: int = 160) -> str:
+    import torch
+
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=512,
+    )
+    with torch.no_grad():
+        generated = model.generate(**inputs, max_new_tokens=max_new_tokens)
+    return tokenizer.decode(generated[0], skip_special_tokens=True)
+
+
+def _jaccard_overlap(a: str, b: str) -> float:
+    import re
+
+    def toks(text: str) -> set[str]:
+        return {
+            t for t in re.sub(r"[^a-z0-9]+", " ", str(text).lower()).split() if len(t) > 2
+        }
+
+    left, right = toks(a), toks(b)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +1041,494 @@ def _render_results_fragment() -> None:
 
 
 # ---------------------------------------------------------------------------
+# LoRA / QLoRA tab
+# ---------------------------------------------------------------------------
+
+
+def render_lora_tab(pipeline: RAGPipeline) -> None:
+    st.subheader(":microscope: LoRA / QLoRA Experiment")
+
+    st.caption(
+        "Research extension for CSE 534: generate document-grounded QA pairs "
+        "from the indexed PDF chunks, fine-tune `google/flan-t5-small` with "
+        "LoRA, evaluate the adapter, and check whether the machine can support QLoRA."
+    )
+
+    ready = pipeline.is_ready()
+    n_docs = int(pipeline.store.metadata["doc_name"].nunique()) if ready else 0
+    n_chunks = int(len(pipeline.store)) if ready else 0
+    train_rows = _count_jsonl(LORA_TRAIN_FILE)
+    eval_rows = _count_jsonl(LORA_EVAL_FILE)
+    adapter_ready = (LORA_ADAPTER_DIR / "adapter_config.json").exists()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Indexed documents", n_docs)
+    c2.metric("Indexed chunks", n_chunks)
+    c3.metric("QA examples", f"{train_rows} train / {eval_rows} eval")
+    c4.metric("LoRA adapter", "Ready" if adapter_ready else "Not trained")
+
+    deps = {
+        "transformers": _package_available("transformers"),
+        "datasets": _package_available("datasets"),
+        "peft": _package_available("peft"),
+        "accelerate": _package_available("accelerate"),
+        "bitsandbytes": _package_available("bitsandbytes"),
+    }
+    missing_required = [name for name in ("transformers", "datasets", "peft", "accelerate") if not deps[name]]
+    with st.expander("Dependency status", expanded=bool(missing_required)):
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Package": name,
+                        "Installed": "yes" if available else "no",
+                        "Purpose": (
+                            "QLoRA 4-bit loading"
+                            if name == "bitsandbytes"
+                            else "LoRA training/evaluation"
+                        ),
+                    }
+                    for name, available in deps.items()
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        if missing_required:
+            st.warning(
+                "Install the missing LoRA packages from `requirements.txt` "
+                "before running training."
+            )
+
+    st.markdown("#### 1. Build the fine-tuning dataset")
+    d1, d2 = st.columns(2)
+    with d1:
+        examples_per_chunk = st.slider(
+            "Examples per chunk",
+            min_value=1,
+            max_value=5,
+            value=3,
+            help="More examples gives the adapter more practice but increases training time.",
+        )
+    with d2:
+        eval_fraction = st.slider(
+            "Eval split",
+            min_value=0.05,
+            max_value=0.50,
+            value=0.20,
+            step=0.05,
+            help="Fraction of generated QA pairs reserved for adapter evaluation.",
+        )
+
+    if st.button(
+        "Generate QA training dataset",
+        disabled=not ready,
+        use_container_width=True,
+    ):
+        with st.spinner("Creating template-based QA examples from indexed chunks..."):
+            result = _run_lora_script(
+                "prepare_qa_dataset.py",
+                [
+                    "--examples-per-chunk",
+                    str(int(examples_per_chunk)),
+                    "--eval-fraction",
+                    str(float(eval_fraction)),
+                ],
+            )
+        _render_process_result(result)
+        if result.returncode == 0:
+            st.rerun()
+
+    if not ready:
+        st.info("Build the document index first; the LoRA dataset is generated from `indexes/chunks.parquet`.")
+
+    if LORA_TRAIN_FILE.exists():
+        with st.expander("Preview generated training rows", expanded=False):
+            preview_rows: list[dict] = []
+            with LORA_TRAIN_FILE.open("r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        preview_rows.append(json.loads(line))
+                    if len(preview_rows) >= 5:
+                        break
+            cols = ["question", "answer", "doc_name", "page_start", "page_end"]
+            preview_df = pd.DataFrame(preview_rows)
+            if preview_df.empty:
+                st.caption("No preview rows available.")
+            else:
+                st.dataframe(
+                    preview_df[[c for c in cols if c in preview_df.columns]],
+                    use_container_width=True,
+                )
+
+    st.markdown("#### 2. Train LoRA on FLAN-T5-small")
+    model_id = st.text_input("Base model", value="google/flan-t5-small")
+    t1, t2, t3, t4 = st.columns(4)
+    with t1:
+        epochs = st.number_input("Epochs", min_value=0.1, max_value=10.0, value=3.0, step=0.5)
+    with t2:
+        batch_size = st.number_input("Batch size", min_value=1, max_value=16, value=2, step=1)
+    with t3:
+        learning_rate = st.number_input(
+            "Learning rate",
+            min_value=0.00001,
+            max_value=0.01,
+            value=0.0005,
+            step=0.0001,
+            format="%.5f",
+        )
+    with t4:
+        max_steps = st.number_input(
+            "Max steps",
+            min_value=-1,
+            max_value=5000,
+            value=-1,
+            step=1,
+            help="Use -1 for the full epoch-based run; small positive values are useful for a quick smoke test.",
+        )
+
+    can_train = train_rows > 0 and eval_rows > 0 and not missing_required
+    if st.button("Train LoRA adapter", disabled=not can_train, use_container_width=True):
+        with st.spinner("Training LoRA adapter. The first run may download the base model and take several minutes..."):
+            result = _run_lora_script(
+                "train_lora.py",
+                [
+                    "--model",
+                    model_id,
+                    "--epochs",
+                    str(float(epochs)),
+                    "--batch-size",
+                    str(int(batch_size)),
+                    "--learning-rate",
+                    str(float(learning_rate)),
+                    "--max-steps",
+                    str(int(max_steps)),
+                ],
+            )
+        _render_process_result(result)
+        if result.returncode == 0:
+            st.rerun()
+    if train_rows == 0 or eval_rows == 0:
+        st.info("Generate the QA training dataset before starting LoRA training.")
+
+    training_summary = _load_json_file(LORA_ADAPTER_DIR / "training_summary.json")
+    if training_summary:
+        with st.expander("Latest LoRA training summary", expanded=False):
+            st.json(training_summary)
+
+    st.markdown("#### 3. Evaluate the adapter")
+    eval_limit = st.number_input(
+        "Evaluation row limit",
+        min_value=0,
+        max_value=500,
+        value=0,
+        step=5,
+        help="Use 0 to evaluate every generated eval row.",
+    )
+    if st.button("Evaluate LoRA adapter", disabled=not adapter_ready, use_container_width=True):
+        with st.spinner("Generating adapter answers and scoring overlap..."):
+            result = _run_lora_script(
+                "evaluate_adapter.py",
+                [
+                    "--model",
+                    model_id,
+                    "--limit",
+                    str(int(eval_limit)),
+                ],
+            )
+        _render_process_result(result)
+
+    adapter_eval_summary = _load_json_file(LORA_EVAL_SUMMARY_FILE)
+    if adapter_eval_summary:
+        st.markdown("**Latest adapter evaluation summary**")
+        st.json(adapter_eval_summary)
+        adapter_eval_file = LORA_RESULTS_DIR / "adapter_eval.jsonl"
+        if adapter_eval_file.exists():
+            st.download_button(
+                "Download adapter evaluation JSONL",
+                data=adapter_eval_file.read_bytes(),
+                file_name="adapter_eval.jsonl",
+                mime="application/jsonl",
+                use_container_width=True,
+            )
+
+    st.markdown("#### 4. Check QLoRA readiness")
+    st.caption(
+        "QLoRA requires 4-bit quantization support. On most Mac/CPU-only setups, "
+        "this check will report that full QLoRA training is not available locally."
+    )
+    if st.button("Check QLoRA readiness", use_container_width=True):
+        with st.spinner("Checking CUDA and bitsandbytes availability..."):
+            result = _run_lora_script("train_qlora.py", ["--model", model_id, "--check-only"])
+        _render_process_result(result)
+
+    st.markdown("#### 5. Try the adapter")
+    st.caption(
+        "Ask the trained LoRA adapter your own question. By default the app "
+        "auto-retrieves context from the same FAISS index the Chat tab uses, "
+        "so you can just type a question. Switch the **Context source** below "
+        "to manually pick a chunk or paste your own text for debugging."
+    )
+
+    inference_blockers: list[str] = []
+    if not adapter_ready:
+        inference_blockers.append(
+            "Train the LoRA adapter first (step 2) — `adapter_config.json` is missing."
+        )
+    if not deps["transformers"] or not deps["peft"]:
+        inference_blockers.append(
+            "Install `transformers` and `peft` to run adapter inference."
+        )
+
+    if inference_blockers:
+        for msg in inference_blockers:
+            st.info(msg)
+    else:
+        chunk_options: list[dict] = []
+        if ready and n_chunks > 0:
+            preview_df = pipeline.store.metadata.copy()
+            for i, row in preview_df.iterrows():
+                text = str(row.get("raw_text", "")).strip()
+                if not text:
+                    continue
+                snippet = text[:90].replace("\n", " ")
+                chunk_options.append(
+                    {
+                        "idx": int(i),
+                        "doc_name": str(row.get("doc_name", "")),
+                        "page_start": int(row.get("page_start", 1) or 1),
+                        "page_end": int(row.get("page_end", row.get("page_start", 1)) or 1),
+                        "section_title": str(row.get("section_title") or "this section"),
+                        "raw_text": text,
+                        "label": (
+                            f"{row.get('doc_name', '')} p.{row.get('page_start', '?')} — {snippet}..."
+                        ),
+                    }
+                )
+
+        source_options: list[str] = []
+        if ready and n_chunks > 0:
+            source_options.append("Ask a question (auto-retrieve from index)")
+        if chunk_options:
+            source_options.append("Pick a chunk manually")
+        source_options.append("Paste my own context")
+
+        source_mode = st.radio(
+            "Context source",
+            options=source_options,
+            horizontal=True,
+            key="lora_try_source_mode",
+            help=(
+                "Auto-retrieve = closest to the Chat tab: just ask a question and "
+                "the FAISS index supplies the context. Pick / Paste are useful for "
+                "debugging the adapter on a known passage."
+            ),
+        )
+
+        default_instruction = (
+            "Answer using only the provided context. If the answer is unsupported, "
+            "say you could not find a supported answer. Cite the source."
+        )
+
+        # Where context will come from for this run.
+        context_text: str = ""
+        question_text: str = ""
+        retrieved_for_display: list = []  # populated only in auto-retrieve mode
+        retrieval_top_k: int = pipeline.config.top_k
+
+        if source_mode == "Ask a question (auto-retrieve from index)":
+            question_text = st.text_input(
+                "Your question",
+                value=st.session_state.get("lora_try_auto_question", "Can I submit the project late?"),
+                key="lora_try_auto_question",
+                placeholder="Ask anything that should be answerable from your indexed PDFs...",
+            )
+            retrieval_top_k = st.slider(
+                "Context chunks to retrieve (top-k)",
+                min_value=1,
+                max_value=min(8, max(1, n_chunks)),
+                value=min(2, max(1, n_chunks)),
+                step=1,
+                help="How many top retrieved chunks to concatenate as context. FLAN-T5-small only handles ~512 tokens, so 1-2 chunks is usually right.",
+                key="lora_try_auto_topk",
+            )
+            instruction = default_instruction
+        elif source_mode == "Pick a chunk manually" and chunk_options:
+            chosen_idx = st.selectbox(
+                "Choose a chunk",
+                options=list(range(len(chunk_options))),
+                format_func=lambda i: chunk_options[i]["label"],
+                key="lora_try_chunk_pick",
+            )
+            chosen = chunk_options[chosen_idx]
+            instruction = st.text_input(
+                "Instruction",
+                value=default_instruction,
+                key="lora_try_pick_instruction",
+            )
+            context_text = st.text_area(
+                "Context (auto-filled from the chosen chunk; editable)",
+                value=chosen["raw_text"][:1400],
+                height=180,
+                key=f"lora_try_pick_context_{chosen_idx}",
+            )
+            question_text = st.text_input(
+                "Question",
+                value=f"What does {chosen['doc_name']} say about {chosen['section_title']}?",
+                key=f"lora_try_pick_question_{chosen_idx}",
+            )
+        else:
+            instruction = st.text_input(
+                "Instruction",
+                value=default_instruction,
+                key="lora_try_paste_instruction",
+            )
+            context_text = st.text_area(
+                "Context",
+                value=(
+                    "Late submissions for assignments are accepted up to 48 hours after "
+                    "the deadline with a 20% penalty per day. Project deadlines do not "
+                    "allow late submissions."
+                ),
+                height=180,
+                key="lora_try_paste_context",
+            )
+            question_text = st.text_input(
+                "Question",
+                value="Can I submit the project late?",
+                key="lora_try_paste_question",
+            )
+
+        g1, g2, g3 = st.columns([1, 1, 1])
+        with g1:
+            max_new_tokens = st.slider(
+                "Max new tokens",
+                min_value=32,
+                max_value=320,
+                value=160,
+                step=16,
+                key="lora_try_max_new",
+            )
+        with g2:
+            compare_with_base = st.checkbox(
+                "Compare against base model",
+                value=True,
+                help="Generate the same prompt with the unmodified base FLAN-T5 so you can see what fine-tuning changed.",
+                key="lora_try_compare",
+            )
+        with g3:
+            if st.button("Reload models", help="Clear cached weights (use after retraining)."):
+                _load_flan_base.clear()
+                _load_flan_with_adapter.clear()
+                st.success("Model cache cleared. Next generation will reload weights.")
+
+        if st.button(
+            "Generate answer",
+            type="primary",
+            use_container_width=True,
+            key="lora_try_generate",
+        ):
+            question_clean = (question_text or "").strip()
+            if not question_clean:
+                st.warning("Please type a question.")
+            else:
+                # Auto-retrieve mode: fetch context from FAISS using the same
+                # retriever the Chat tab uses, then concatenate the top chunks.
+                if source_mode == "Ask a question (auto-retrieve from index)":
+                    with st.spinner("Retrieving relevant chunks from the index..."):
+                        retrieved_for_display = pipeline.retriever.retrieve(
+                            question_clean,
+                            top_k=int(retrieval_top_k),
+                            mode=pipeline.config.retrieval_mode,
+                            hybrid_alpha=pipeline.config.hybrid_alpha,
+                        )
+                    if not retrieved_for_display:
+                        st.warning(
+                            "No chunks were retrieved for this question. The "
+                            "adapter would have nothing to read from. Try a "
+                            "different phrasing or build the index first."
+                        )
+                        return
+                    pieces: list[str] = []
+                    for r in retrieved_for_display:
+                        cite = r.citation  # e.g. "[Syllabus.pdf p.3]"
+                        pieces.append(f"{cite}\n{r.raw_text}")
+                    context_text = "\n\n---\n\n".join(pieces)[:1800]
+
+                if not (context_text or "").strip():
+                    st.warning("No context available — please paste or pick one.")
+                    return
+
+                prompt = _format_lora_prompt(instruction, context_text, question_clean)
+                with st.expander("Prompt sent to the model", expanded=False):
+                    st.code(prompt, language="text")
+
+                if retrieved_for_display:
+                    with st.expander(
+                        f"Retrieved {len(retrieved_for_display)} chunk(s) used as context",
+                        expanded=False,
+                    ):
+                        for i, r in enumerate(retrieved_for_display, start=1):
+                            st.markdown(
+                                f"**{i}.** `{r.citation}` — score "
+                                f"{r.score:.3f} ({r.retrieval_source})"
+                            )
+                            preview = r.raw_text.strip().replace("\n", " ")
+                            st.caption(preview[:280] + ("..." if len(preview) > 280 else ""))
+
+                adapter_pred: str | None = None
+                base_pred: str | None = None
+                signature = _adapter_signature(LORA_ADAPTER_DIR)
+
+                try:
+                    with st.spinner("Generating with LoRA adapter..."):
+                        adapter_tok, adapter_model = _load_flan_with_adapter(
+                            model_id,
+                            str(LORA_ADAPTER_DIR),
+                            signature,
+                        )
+                        adapter_pred = _generate_text(
+                            adapter_tok, adapter_model, prompt, max_new_tokens=int(max_new_tokens)
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Adapter generation failed: {exc}")
+
+                if compare_with_base:
+                    try:
+                        with st.spinner("Generating with base FLAN-T5 (no adapter)..."):
+                            base_tok, base_model = _load_flan_base(model_id)
+                            base_pred = _generate_text(
+                                base_tok, base_model, prompt, max_new_tokens=int(max_new_tokens)
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        st.warning(f"Base model generation failed: {exc}")
+
+                if adapter_pred is not None and base_pred is not None:
+                    col_b, col_a = st.columns(2)
+                    with col_b:
+                        st.markdown("**Base FLAN-T5 (no adapter)**")
+                        st.success(base_pred or "(empty output)")
+                        st.caption(
+                            f"Token overlap with context: "
+                            f"{_jaccard_overlap(base_pred or '', context_text):.2f}"
+                        )
+                    with col_a:
+                        st.markdown("**LoRA adapter**")
+                        st.success(adapter_pred or "(empty output)")
+                        st.caption(
+                            f"Token overlap with context: "
+                            f"{_jaccard_overlap(adapter_pred or '', context_text):.2f}"
+                        )
+                elif adapter_pred is not None:
+                    st.markdown("**LoRA adapter answer**")
+                    st.success(adapter_pred or "(empty output)")
+                    st.caption(
+                        f"Token overlap with context: "
+                        f"{_jaccard_overlap(adapter_pred or '', context_text):.2f}"
+                    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1008,13 +1660,17 @@ def main() -> None:
         "documents using retrieval-augmented generation — with citations."
     )
 
-    tab_chat, tab_docs, tab_eval = st.tabs(["Chat", "Documents / Index", "Evaluation"])
+    tab_chat, tab_docs, tab_eval, tab_lora = st.tabs(
+        ["Chat", "Documents / Index", "Evaluation", "LoRA / QLoRA"]
+    )
     with tab_chat:
         render_chat_tab(pipeline)
     with tab_docs:
         render_documents_tab(pipeline)
     with tab_eval:
         render_evaluation_tab(pipeline)
+    with tab_lora:
+        render_lora_tab(pipeline)
 
 
 if __name__ == "__main__":

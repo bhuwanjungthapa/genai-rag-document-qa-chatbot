@@ -8,7 +8,7 @@ retrieved context and always shown with citations like
 This project is intentionally kept simple and implementable while still
 covering every real RAG concern: ingestion, section-aware chunking,
 embeddings, hybrid BM25 + FAISS retrieval, grounded generation, logging,
-and evaluation.
+evaluation, and a graduate-level LoRA / QLoRA experiment path.
 
 ---
 
@@ -33,6 +33,9 @@ and evaluation.
   computes Hit@k, semantic similarity, optional BERTScore, calibration/ECE,
   and manual labels such as Correct / Partially Correct / Unsupported /
   Hallucinated.
+- A **LoRA / QLoRA** tab generates document-grounded QA examples from the
+  current PDF chunks, fine-tunes `google/flan-t5-small` with LoRA, evaluates
+  the saved adapter, and reports whether the local machine can support QLoRA.
 
 ---
 
@@ -76,8 +79,17 @@ Key modules (all in `src/`):
 | `retriever.py`    | Combines dense FAISS and sparse BM25 retrieval modes. |
 | `llm_client.py`   | Provider abstraction: Gemini, OpenAI, or a safe NullClient. |
 | `rag_pipeline.py` | High-level API: build index, answer, log, weak-retrieval guardrail. |
-| `evaluation.py`   | Hit@k, overlap helper, summary metrics, results dataframe. |
+| `evaluation.py`   | Hit@k, overlap, semantic similarity, optional BERTScore, calibration/ECE. |
 | `utils.py`        | Text cleaning, heading detection, JSONL logging. |
+
+Research experiment modules live in `experiments/lora_qlora/`:
+
+| File | Purpose |
+| --- | --- |
+| `prepare_qa_dataset.py` | Builds train/eval QA JSONL files from the current indexed chunks. |
+| `train_lora.py` | Fine-tunes `google/flan-t5-small` with a PEFT LoRA adapter. |
+| `evaluate_adapter.py` | Generates adapter answers and summarizes overlap against held-out examples. |
+| `train_qlora.py` | Checks local CUDA / `bitsandbytes` readiness for QLoRA. |
 
 ---
 
@@ -274,6 +286,36 @@ Notes:
 
 ---
 
+## 6c. LoRA / QLoRA experiment
+
+Open the **LoRA / QLoRA** tab after building the normal PDF index. The
+experiment keeps the production chatbot RAG-based while adding a
+research-level parameter-efficient fine-tuning comparison.
+
+The tab runs this workflow:
+
+1. Generate QA training/eval examples from `indexes/chunks.parquet`.
+2. Train a LoRA adapter on `google/flan-t5-small`.
+3. Evaluate the adapter on the generated held-out split.
+4. Check whether the local machine is ready for QLoRA.
+
+Command-line equivalents:
+
+```bash
+python experiments/lora_qlora/prepare_qa_dataset.py
+python experiments/lora_qlora/train_lora.py
+python experiments/lora_qlora/evaluate_adapter.py
+python experiments/lora_qlora/train_qlora.py --check-only
+```
+
+Outputs are saved under `experiments/lora_qlora/data/`,
+`experiments/lora_qlora/adapters/`, and `experiments/lora_qlora/results/`.
+QLoRA is included as a readiness path because full 4-bit training normally
+requires CUDA plus `bitsandbytes`; regular LoRA with FLAN-T5-small is the
+practical local option on a typical Mac.
+
+---
+
 ## 7. Screenshots (placeholders)
 
 Add your own screenshots here once you run the app:
@@ -281,6 +323,7 @@ Add your own screenshots here once you run the app:
 - `docs/screenshot_chat.png` — the Chat tab with a grounded answer and citations.
 - `docs/screenshot_documents.png` — the Documents / Index tab.
 - `docs/screenshot_evaluation.png` — the Evaluation tab with metrics.
+- `docs/screenshot_lora.png` — the LoRA / QLoRA tab after generating QA examples.
 
 ---
 
@@ -347,6 +390,11 @@ Streamlit sidebar.
 - Token overlap remains a prioritization signal. Semantic similarity and
   optional BERTScore add stronger automated answer-quality signals, but manual
   labels remain the ground truth.
+- LoRA is a research comparison, not a replacement for RAG. Because users can
+  upload new PDFs at any time, the chatbot still needs retrieval for dynamic
+  document knowledge.
+- QLoRA is hardware-dependent. CPU-only or Mac setups generally cannot run
+  true 4-bit QLoRA locally without a CUDA GPU and `bitsandbytes`.
 - No user authentication, no database — this is intentional for a local
   single-user project.
 
@@ -359,6 +407,8 @@ Streamlit sidebar.
   retrieved chunk.
 - Caching of LLM responses by (question, retrieved-ids) to cut costs during
   evaluation sweeps.
+- Expand the LoRA experiment with human-written QA pairs and compare adapter
+  outputs against RAG answers using BERTScore / semantic similarity.
 
 ---
 
@@ -376,9 +426,11 @@ Streamlit sidebar.
 ├── logs/                        # qa_log.jsonl (all questions + retrieved chunks)
 ├── eval/
 │   └── sample_eval_questions.csv
+├── experiments/
+│   └── lora_qlora/              # LoRA/QLoRA data, adapter, eval scripts
 ├── reports/
 │   ├── figures.py               # pure figure builders (shared by app + script)
-│   ├── make_figures.py          # CLI: save the 5 report figures to disk
+│   ├── make_figures.py          # CLI: save the 6 report figures to disk
 │   └── figures/                 # output PNGs land here (when using the CLI)
 └── src/
     ├── __init__.py

@@ -1,0 +1,11 @@
+{
+  "n": 25,
+  "n_labeled": 25,
+  "retrieval_hit_rate": 0.96,
+  "correctness_rate": 0.52,
+  "hallucination_rate": 0.0,
+  "grounded_rate": 0.96,
+  "calibration_ece": 0.1394,
+  "semantic_similarity_mean": 0.6119840000000001,
+  "bertscore_f1_mean": 0.7685119999999999
+}

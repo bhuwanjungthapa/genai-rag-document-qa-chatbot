@@ -3,7 +3,7 @@
 This document explains what the project actually *does* end to end — not the
 language or libraries under the hood, but the **flow of information** from the
 moment you drop a PDF into the sidebar to the moment a chart appears in the
-Evaluation tab.
+Evaluation tab or a LoRA adapter is trained from the indexed chunks.
 
 If you want to know *"when I click X, what happens behind the scenes?"* — this
 is the file to read.
@@ -26,6 +26,9 @@ remembers the right policy, we:
    *"answer only from this. If it is not here, refuse."*
 6. **Attach citations** pointing back at the document and page each chunk
    came from.
+7. For the graduate experiment, optionally **generate QA pairs from those
+   chunks and fine-tune `google/flan-t5-small` with LoRA** as a research
+   comparison to the RAG pipeline.
 
 Everything the app shows on screen is a consequence of that pipeline.
 
@@ -67,7 +70,8 @@ Everything the app shows on screen is a consequence of that pipeline.
  └────────────┘
 ```
 
-The three tabs are three different *views* on top of one shared index.
+The four tabs are different *views* on top of one shared index: Chat,
+Documents / Index, Evaluation, and LoRA / QLoRA.
 
 ---
 
@@ -466,7 +470,76 @@ If the average score in a bucket is 0.60 but empirical correctness is
 
 ---
 
-## 7. Where reliability comes from
+## 7. The "LoRA / QLoRA" tab
+
+This tab is the graduate-level research extension. It does **not** replace
+RAG, because users can upload new PDFs at any time and the chatbot needs
+retrieval to answer from the current corpus. Instead, it creates a controlled
+fine-tuning comparison using the same indexed chunks.
+
+### 7.1 Dataset generation
+
+When you click **Generate QA training dataset**, the app runs:
+
+```bash
+python experiments/lora_qlora/prepare_qa_dataset.py
+```
+
+The script reads `indexes/chunks.parquet`, creates template-based
+document-grounded QA examples, shuffles them with a fixed seed, and writes:
+
+- `experiments/lora_qlora/data/train.jsonl`
+- `experiments/lora_qlora/data/eval.jsonl`
+
+Each example contains an instruction, a context chunk, a generated question,
+the expected answer with a source citation, and metadata such as document name,
+page range, and chunk id. This keeps the experiment reproducible and avoids
+spending LLM/API calls just to synthesize training rows.
+
+### 7.2 LoRA training
+
+When you click **Train LoRA adapter**, the app runs:
+
+```bash
+python experiments/lora_qlora/train_lora.py --model google/flan-t5-small
+```
+
+The script loads `google/flan-t5-small`, attaches a PEFT LoRA adapter to the
+attention `q` and `v` modules, and trains only the small adapter weights. The
+base model stays frozen. The saved adapter lands in:
+
+```text
+experiments/lora_qlora/adapters/flan-t5-small-lora/
+```
+
+The practical goal is to teach the small model the project's answer style:
+answer from the supplied context, keep the response grounded, and include a
+citation. It is not meant to memorize every uploaded PDF forever.
+
+### 7.3 Adapter evaluation
+
+When you click **Evaluate LoRA adapter**, the app loads the base model plus
+the saved adapter, generates answers for the held-out eval split, and writes:
+
+- `experiments/lora_qlora/results/adapter_eval.jsonl`
+- `experiments/lora_qlora/results/adapter_eval_summary.json`
+
+The first summary metric is a lexical Jaccard overlap against the held-out
+answer. In the final report, this LoRA result can be discussed alongside the
+main RAG evaluation metrics: retrieval Hit@k, semantic similarity, BERTScore,
+manual correctness labels, and calibration/ECE.
+
+### 7.4 QLoRA readiness
+
+QLoRA usually needs CUDA plus `bitsandbytes` for 4-bit quantized loading.
+The app includes `train_qlora.py --check-only` to report whether the local
+machine is ready. On a typical Mac or CPU-only setup, the honest result is
+that regular LoRA is runnable locally while full QLoRA is a future GPU-backed
+extension.
+
+---
+
+## 8. Where reliability comes from
 
 A few design choices that are easy to miss but do most of the heavy
 lifting:
@@ -507,7 +580,7 @@ lifting:
 
 ---
 
-## 8. End-to-end flow (single diagram)
+## 9. End-to-end flow (single diagram)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -549,7 +622,7 @@ That one diagram is essentially the entire project.
 
 ---
 
-## 9. TL;DR per UI surface
+## 10. TL;DR per UI surface
 
 - **Sidebar** — pick a model, pick your knobs, build the index.
 - **Chat tab** — ask a question; you always see the answer, the
@@ -558,3 +631,6 @@ That one diagram is essentially the entire project.
 - **Evaluation tab** — run a question set, grade the answers, and
   read six charts that separate *retrieval quality* from *answer
   quality* so you can tell which part of the pipeline to improve next.
+- **LoRA / QLoRA tab** — generate chunk-grounded QA examples, train a
+  FLAN-T5-small LoRA adapter, evaluate it, and check whether the machine
+  can support QLoRA.

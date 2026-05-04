@@ -1,0 +1,105 @@
+question,gold_answer,predicted_answer,retrieved_doc_names,retrieved_pages,hit_at_k,grounded_or_not,top_score,overlap_pred_vs_gold,overlap_pred_vs_context,semantic_similarity_pred_vs_gold,bertscore_precision,bertscore_recall,bertscore_f1,notes,label
+What is the grading policy for this course?,"Grades are based on assignments, a midterm, a final exam, and participation; exact weights are listed in the syllabus.","The grading policy for this course is as follows:
+
+**Grading Breakdown**
+*   Assignments: 40%
+*   In-class Quizzes: 25%
+*   Course Project: 35%
+
+**Grading Scale**
+*   97–100 = A+
+*   94–96.99 = A
+*   90–93.99 = A-
+*   87–89.99 = B+
+*   83–86.99 = B
+*   80–82.99 = B-
+*   77–79.999 = C+
+*   73–76.99 = C
+*   70–72.99 = C-
+*   67–69.999 = D+
+*   63–66.99 = D
+*   60–62.99 = D-
+*   59.99 and below = F
+
+**Policies**
+*   **Rounding:** Fractional values are rounded automatically. Portions ending in .0 through .4 are rounded down, and .5 through .9 are rounded up. No further grade adjustments are made.
+*   **Early Submission:** Assignments submitted early receive 1% extra credit per day, up to a maximum of 5%, with the final score capped at 100.
+*   **Curving:** The instructor reserves the right to curve grades at their discretion based on class performance, ensuring that a student's grade will not be reduced as a result.
+
+[CSE_434___CSE_534_Syllabus.pdf p.2-7]","CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf","2-7, 2-7, 2-7, 2-7",True,True,0.7561,0.11,0.308,0.5287,0.6037,0.7889,0.684,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Partially Correct
+When is the midterm exam?,The midterm is typically scheduled around week 7; see the course schedule in the syllabus.,The course does not include a midterm exam [CSE_434___CSE_534_Syllabus.pdf p.1].,"Midterm_Project_Check_Requirement.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf","1-3, 1-2, 2-7, 2-7",True,True,0.579,0.222,0.048,0.5798,0.7358,0.815,0.7734,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Partially Correct
+What is the late assignment policy?,"Late assignments are penalized per day up to a cap, after which they may not be accepted.","Late assignments are accepted up to three days after the due date with a penalty of 10% per day. Assignments submitted more than three days late will not be accepted unless accompanied by a valid, officially documented excuse supported by the university. Please note that no late submissions are permitted for course project–related deadlines. [CSE_434___CSE_534_Syllabus.pdf p.2-7]","CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf","2-7, 2-7, 2-7, 2-7",True,True,0.6946,0.17,0.194,0.7652,0.7171,0.861,0.7825,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+Who is the instructor and what are their office hours?,"The syllabus lists the instructor's name, email, and weekly office hours.","The instructor is Dr. Yang Zhang, and office hours are available on Zoom or in person by appointment via email [CSE_434___CSE_534_Syllabus.pdf p.1].","CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf","1-2, 2-7, 1-2, 2-7",True,True,0.5844,0.318,0.088,0.641,0.6988,0.8375,0.7619,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+What is the expected format for Assignment 1?,Assignment 1 must be submitted in the format described on the assignment handout (usually PDF).,Assignments include both code and analyses to be uploaded for grading. [CSE_434___CSE_534_Syllabus.pdf p.2],"CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf","2-7, 2-7, 2-7, 2-7",True,True,0.5679,0.045,0.06,0.6608,0.7016,0.7847,0.7408,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+How many points is Assignment 1 worth?,Assignment 1's point value is listed at the top of the assignment PDF.,I could not find a supported answer in the uploaded documents.,"CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, Midterm_Project_Check_Requirement.pdf","2-7, 2-7, 2-7, 3-4",True,False,0.5614,0.071,0.016,0.2074,0.7531,0.751,0.7521,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Unsupported
+Are calculators allowed on the final exam?,The syllabus or exam policy document will specify which aids are allowed during exams.,The course does not include a final exam [CSE_434___CSE_534_Syllabus.pdf p.2].,"CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf","2-7, 1-2, 2-7, 2-7",True,True,0.5979,0.136,0.041,0.4372,0.7124,0.8122,0.759,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Partially Correct
+How do I contact the teaching assistants?,TA names and contact information are listed in the syllabus or a separate staff page.,"You can contact the teaching assistant, Manish Bhandari, via email at bhandam4@miamioh.edu. [CSE_434___CSE_534_Syllabus.pdf p.2]","CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf","2-7, 1-2, 1-2, 2-7",True,True,0.5018,0.115,0.083,0.4388,0.674,0.7559,0.7126,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Partially Correct
+What is the name Professor and TA?,"The instructor for the course is Dr. Ohio, and TA is Oxford",The Professor is Dr. Yang Zhang and the TA is Manish Bhandari [CSE_434___CSE_534_Syllabus.pdf p.1].,"CSE_434___CSE_534_Syllabus.pdf, Midterm_Project_Check_Requirement.pdf, CSE_434___CSE_534_Syllabus.pdf, Midterm_Project_Check_Requirement.pdf","1-2, 1-3, 2-7, 3-4",True,True,0.3581,0.118,0.039,0.4701,0.6841,0.8117,0.7424,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Partially Correct
+How long is Final Project Presentation time?,The total Presentation time is 8  minutes for Final Presentation.,"The Final Project Presentation time is 8 minutes according to the Final Project Presentation Guideline [Final_Project_Presentation_Guideline.pdf p.1], while the Project Requirement document states the demo/presentation is 10–12 minutes [Project_Requirement.pdf p.1].","Final_Project_Presentation_Guideline.pdf, CSE_434___CSE_534_Syllabus.pdf, Project_Requirement.pdf, CSE_434___CSE_534_Syllabus.pdf","1-3, 2-7, 1-12, 2-7",True,True,0.7574,0.312,0.04,0.8238,0.695,0.8857,0.7788,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+How many slides are nned for final presentation?,Total 9 slides are needed.,The final presentation requires 9 slides. [Final_Project_Presentation_Guideline.pdf p.1-3],"Final_Project_Presentation_Guideline.pdf, Final_Project_Presentation_Guideline.pdf, CSE_434___CSE_534_Syllabus.pdf, Final_Project_Presentation_Guideline.pdf","1-3, 1-3, 2-7, 1-3",True,True,0.706,0.091,0.027,0.7624,0.6943,0.8554,0.7665,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+What is slide 6 for?,Slide six is for methods and system design.,"Slide 6 is part of the ""Methods / System Design"" section of the presentation. Along with slide 5, it should include:
+
+*   An overall system or architecture diagram
+*   A description of major system components (prompting strategy, retrieval pipeline, fine-tuning or agent-based design, and evaluation workflow)
+*   Models used and the rationale for choosing them
+*   Engineering constraints and design considerations (API or rate limits, computational resources, and latency or cost constraints)
+
+[Final_Project_Presentation_Guideline.pdf p.2-3]","Final_Project_Presentation_Guideline.pdf, Final_Project_Presentation_Guideline.pdf, Final_Project_Presentation_Guideline.pdf, Midterm_Project_Check_Requirement.pdf","1-3, 1-3, 1-3, 1-3",True,True,0.476,0.12,0.227,0.8346,0.7123,0.8697,0.7832,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+In which slide is Reflection and Limitation?,It's on slide 9 of final presentation.,Reflection and Limitations are in Slide 9. [Final_Project_Presentation_Guideline.pdf p.1],"Final_Project_Presentation_Guideline.pdf, Final_Project_Presentation_Guideline.pdf, Final_Project_Presentation_Guideline.pdf, Final_Project_Presentation_Guideline.pdf","1-3, 1-3, 1-3, 1-3",True,True,0.6186,0.3,0.044,0.4422,0.7469,0.8475,0.7941,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Partially Correct
+What should the comparative analysis be on?,"Comparative analysis should be on baseline, alternative prompts,  with vs without RAG and fine tune vs non-fine tuned models.","The comparative analysis should cover the following:
+*   Baselines
+*   Alternative prompts
+*   With vs. without RAG
+*   Fine-tuned vs. non-fine-tuned models
+
+[Final_Project_Presentation_Guideline.pdf p.2]","Final_Project_Presentation_Guideline.pdf, Project_Requirement.pdf, Final_Project_Presentation_Guideline.pdf, Project_Requirement.pdf","1-3, 1-12, 1-3, 1-12",True,True,0.5488,0.5,0.076,0.8238,0.8092,0.9065,0.8551,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+Which is the most important slide or part?,"Slide 5-6, which Is about methods and system design is marked as one of the most important.",The final results (Slides 7–8) are identified as the most important part of the presentation [Final_Project_Presentation_Guideline.pdf p.2].,"Final_Project_Presentation_Guideline.pdf, Final_Project_Presentation_Guideline.pdf, Final_Project_Presentation_Guideline.pdf, CSE_434___CSE_534_Syllabus.pdf","1-3, 1-3, 1-3, 1-2",True,True,0.5122,0.136,0.044,0.5447,0.7532,0.8155,0.7832,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Partially Correct
+Where should I include my team members?,In first slide about Title and Team.,"You should include your team members in the following locations:
+
+*   **Final Presentation:** On the opening slide (Slide 1) [Final_Project_Presentation_Guideline.pdf p.1].
+*   **Midterm Project Check-in:** At the top of the first page of the report [Midterm_Project_Check_Requirement.pdf p.3].
+*   **Project Proposal:** On the 1-page proposal document [Project_Requirement.pdf p.1].","Final_Project_Presentation_Guideline.pdf, Midterm_Project_Check_Requirement.pdf, CSE_434___CSE_534_Syllabus.pdf, Project_Requirement.pdf","1-3, 3-4, 2-7, 1-12",True,True,0.5142,0.107,0.096,0.4121,0.6144,0.7619,0.6802,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Partially Correct
+How long should Midterm Report should be?,Midterm report should be 2-3 pages.,The Midterm Report should be 2–3 pages long. [Midterm_Project_Check_Requirement.pdf p.1],"Final_Project_Presentation_Guideline.pdf, Midterm_Project_Check_Requirement.pdf, Final_Project_Presentation_Guideline.pdf, CSE_434___CSE_534_Syllabus.pdf","1-3, 1-3, 1-3, 2-7",True,True,0.5715,0.4,0.039,0.8391,0.8075,0.9404,0.8689,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+Total marks for Midterm Report.,Total marks for Midterm Report is 100,The Midterm Report is worth 100 points total. [Midterm_Project_Check_Requirement.pdf p.4],"Midterm_Project_Check_Requirement.pdf, CSE_434___CSE_534_Syllabus.pdf, Midterm_Project_Check_Requirement.pdf, CSE_434___CSE_534_Syllabus.pdf","1-3, 2-7, 3-4, 2-7",True,True,0.6738,0.308,0.045,0.7621,0.7661,0.8767,0.8177,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+What are extra tast for Graduate Student?,"Graduate students are expected to show greater technical sophistication (e.g., fine-tuning, quantitative evaluation, or state-of-the-art comparison)","Graduate students are expected to perform the following additional tasks:
+
+*   **Discussion:** Lead one advanced discussion topic [CSE_434___CSE_534_Syllabus.pdf p.2].
+*   **Course Project:** Integrate state-of-the-art methods and produce a more substantial deliverable [CSE_434___CSE_534_Syllabus.pdf p.7].
+*   **Technical Sophistication:** Demonstrate greater technical sophistication in their project, such as fine-tuning, quantitative evaluation, or state-of-the-art comparison [Midterm_Project_Check_Requirement.pdf p.4].","CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, Midterm_Project_Check_Requirement.pdf","2-7, 2-7, 2-7, 3-4",True,True,0.5293,0.333,0.162,0.6815,0.6882,0.9088,0.7833,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+What is goal of Midterm Report?,"The goal of midterm report is to communicate what has been done, what has been learned, and what is next.","The goal of the Midterm Report is to communicate what has been done, what has been learned, and what is planned next [Midterm_Project_Check_Requirement.pdf p.1].","Midterm_Project_Check_Requirement.pdf, Project_Requirement.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf","1-3, 1-12, 2-7, 2-7",True,True,0.7471,0.706,0.093,0.9143,0.8546,0.9663,0.9071,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+Rubric for the Midterm Report.,"Rubric are, Problem definiion 15, dataset 15, methodology 25, preliminary results 25, writing and organization 10 and finally reflection and next steps 10.","The Midterm Report is graded out of 100 points based on the following rubric:
+
+*   **Problem Definition (15 points):** Clear research question, motivation, and relevance to the course.
+*   **Dataset (15 points):** Appropriate, well-described, and ethically considered dataset.
+*   **Methodology (25 points):** Sound and creative technical approach.
+*   **Preliminary Results (25 points):** Evidence of progress with interpretation and visuals.
+*   **Writing & Organization (10 points):** Clarity, structure, formatting, and readability.
+*   **Reflection & Next Steps (10 points):** Realistic and thoughtful future plan.
+
+[Midterm_Project_Check_Requirement.pdf p.3-4]","Midterm_Project_Check_Requirement.pdf, CSE_434___CSE_534_Syllabus.pdf, Midterm_Project_Check_Requirement.pdf, CSE_434___CSE_534_Syllabus.pdf","1-3, 2-7, 3-4, 2-7",True,True,0.6569,0.211,0.272,0.5473,0.6912,0.8357,0.7566,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Partially Correct
+What is the team size for final project?,1-3 students can form a group but 2-3 is encouraged.,"The team size for the final project is 1–3 students, with teams of 2–3 students encouraged [Project_Requirement.pdf p.1].","Project_Requirement.pdf, CSE_434___CSE_534_Syllabus.pdf, Final_Project_Presentation_Guideline.pdf, Midterm_Project_Check_Requirement.pdf","1-12, 2-7, 1-3, 1-3",True,True,0.6023,0.125,0.067,0.6418,0.738,0.8226,0.778,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+Whar is the timeline for this project?,"Timeline is divided into 4 parts. Part 1: Project requirenments released, Part 2: Proposal Due, Part 3: Mid-Project Check-in and finally Part 4: Final Demo and Report Due","The project timeline consists of the following milestones:
+
+*   **Project requirements released:** Week 4 [Project_Requirement.pdf p.1]
+*   **Proposal Due:** Week 5 [CSE_434___CSE_534_Syllabus.pdf p.2] (Note: The Project Requirement document lists the proposal as Week 6 [Project_Requirement.pdf p.1])
+*   **Mid-Project Check-in:** Short report [Project_Requirement.pdf p.1]
+*   **Final Demo & Report Due:** End of semester [CSE_434___CSE_534_Syllabus.pdf p.2]
+
+[Project_Requirement.pdf p.1], [CSE_434___CSE_534_Syllabus.pdf p.2]","Final_Project_Presentation_Guideline.pdf, Project_Requirement.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf","1-3, 1-12, 2-7, 2-7",True,True,0.6013,0.286,0.13,0.7681,0.6468,0.8161,0.7216,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Correct
+Is there separate requirenment for the graduate?,"Yes, grauate should do integrate research-level methods and provide advanced evaluation metrics and deliver a large and deeper report.","Yes, graduate students (CSE 534) have additional requirements, which include:
+
+*   Advanced readings.
+*   Leading one advanced discussion topic.
+*   Deeper engagement with generative model frameworks.
+*   A more substantial course project.
+
+[CSE_434___CSE_534_Syllabus.pdf p.1-2], [CSE_434___CSE_534_Syllabus.pdf p.2-7]","CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf, CSE_434___CSE_534_Syllabus.pdf","2-7, 1-2, 2-7, 2-7",False,True,0.5866,0.071,0.117,0.3044,0.6519,0.7933,0.7157,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Partially Correct
+List me text-based project example.,"Prompt Engineering Study, Domain-Specific Summarizier, Rag Chatbot, Bias and safety audit","Text-based project examples include:
+
+*   **Prompt Engineering for Math Q&A:** Compare zero-shot, few-shot, and chain-of-thought prompting across models like GPT-3.5, LLaMA-2, and Mistral using the GSM8K or MATH benchmark [Project_Requirement.pdf p.1].
+*   **Domain-Specific Summarization:** Fine-tune GPT-2 or LLaMA-2 to summarize biomedical abstracts from PubMed into plain English [Project_Requirement.pdf p.3].
+*   **Campus Policy Chatbot:** Use LangChain and a vector database (FAISS/ChromaDB) with a GPT-3.5 backend to answer questions based on university syllabi and policies [Project_Requirement.pdf p.3].
+*   **Bias Audit in LLMs:** Test models on datasets like BBQ or Winogender to analyze bias rates [Project_Requirement.pdf p.2, p.4].
+*   **Hallucination Detection:** Use Wikipedia QA to analyze hallucination rates and compare RAG performance [Project_Requirement.pdf p.2].
+
+Note: While ""Image Captioning"" is listed under the ""Text-Based Project Examples"" heading in the provided documents, it involves processing images to generate text [Project_Requirement.pdf p.1, p.4].","Project_Requirement.pdf, Project_Requirement.pdf, Project_Requirement.pdf, Project_Requirement.pdf","1-12, 1-12, 1-12, 1-12",True,True,0.7113,0.102,0.335,0.4684,0.6198,0.8424,0.7141,auto-labeled by reports/run_full_evaluation.py - review in Streamlit,Partially Correct
